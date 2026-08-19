@@ -664,65 +664,46 @@ def run_streamlit_app():
     st.sidebar.markdown("### ⚙️ Control Panel")
     st.sidebar.markdown("---")
 
-    st.sidebar.markdown("#### 1. Data Upload Option")
-    upload_mode = st.sidebar.radio(
-        "Select Upload Method:",
-        ["📁 Single Merged File (1 Workbook)", "📂 Two Separate Files (Issue & PM)"],
-        index=1
-    )
+    st.sidebar.markdown("#### 1. Data Upload (2 Separate Files)")
+    issue_file = st.sidebar.file_uploader("1️⃣ Issue Tracker File (.xlsx / .csv)", type=["xlsx", "csv"], key="issue_file")
+    pm_file = st.sidebar.file_uploader("2️⃣ PM Tracker File (.xlsx / .csv)", type=["xlsx", "csv"], key="pm_file")
 
     issue_input = None
     pm_input = None
     file_status_text = ""
 
-    if upload_mode == "📁 Single Merged File (1 Workbook)":
-        uploaded_file = st.sidebar.file_uploader("Upload Merged Tracker File (.xlsx / .csv)", type=["xlsx", "csv"], key="single_file")
-        use_default = False
-        default_path = "issue,pm tracker merged.xlsx"
-        
-        if uploaded_file is None:
-            try:
-                import os
-                if os.path.exists(default_path):
-                    use_default = st.sidebar.checkbox("Load Sample Dataset (`issue,pm tracker merged.xlsx`)", value=True)
-            except Exception:
-                pass
+    use_default = False
+    default_issue = "Demo for mpr cm.xlsx"
+    default_pm = "Demo for mpr pm.xlsx"
 
-        if uploaded_file is not None:
-            issue_input = uploaded_file.getvalue()
-            file_status_text = f"✓ Connected Merged File: `{uploaded_file.name}`"
-        elif use_default:
-            issue_input = default_path
-            file_status_text = f"✓ Connected Sample: `{default_path}`"
+    if issue_file is None and pm_file is None:
+        try:
+            import os
+            if os.path.exists(default_issue) and os.path.exists(default_pm):
+                use_default = st.sidebar.checkbox("Load Sample Datasets (`Demo for mpr cm.xlsx` & `Demo for mpr pm.xlsx`)", value=True)
+        except Exception:
+            pass
 
-    else:
-        st.sidebar.markdown("**Upload 2 Separate Files:**")
-        issue_file = st.sidebar.file_uploader("1️⃣ Issue Tracker File (.xlsx / .csv)", type=["xlsx", "csv"], key="issue_file")
-        pm_file = st.sidebar.file_uploader("2️⃣ PM Tracker File (.xlsx / .csv)", type=["xlsx", "csv"], key="pm_file")
+    if issue_file is not None and pm_file is not None:
+        issue_input = issue_file.getvalue()
+        pm_input = pm_file.getvalue()
+        file_status_text = f"✓ Connected Issue: `{issue_file.name}` & PM: `{pm_file.name}`"
+    elif use_default:
+        issue_input = default_issue
+        pm_input = default_pm
+        file_status_text = f"✓ Connected Sample Files: `{default_issue}` & `{default_pm}`"
+    elif issue_file is not None or pm_file is not None:
+        st.sidebar.warning("⚠️ Please upload BOTH the Issue Tracker file and the PM Tracker file.")
 
-        if issue_file is not None and pm_file is not None:
-            issue_input = issue_file.getvalue()
-            pm_input = pm_file.getvalue()
-            file_status_text = f"✓ Connected Issue: `{issue_file.name}` & PM: `{pm_file.name}`"
-        elif issue_file is not None or pm_file is not None:
-            st.sidebar.warning("⚠️ Please upload BOTH the Issue Tracker file and the PM Tracker file.")
-
-    if issue_input is None:
-        st.info("📌 **Upload Required**: Select your upload mode in the sidebar (Single Merged File or 2 Separate Files) and upload your tracker data to load the dashboard.")
+    if issue_input is None or pm_input is None:
+        st.info("📌 **Upload Required**: Upload BOTH the Issue Tracker file and the PM Tracker file in the sidebar to load the dashboard.")
         
         st.markdown("### 📥 Upload Tracker Files")
-        c_mode1, c_mode2 = st.columns(2)
-        with c_mode1:
-            st.markdown("""
-            #### 📂 Option A: Upload 2 Separate Files
-            - **File 1**: Issue Tracker Data (`.xlsx` or `.csv`)
-            - **File 2**: PM Tracker Data (`.xlsx` or `.csv`)
-            """)
-        with c_mode2:
-            st.markdown("""
-            #### 📁 Option B: Upload 1 Single Merged File
-            - Single Excel workbook (`.xlsx`) containing `PM Tracker B2C- B2B` & `Issue Tracker` worksheets.
-            """)
+        st.markdown("""
+        #### 📂 Upload 2 Separate Files:
+        - **File 1**: Issue Tracker Data (`.xlsx` or `.csv`) containing `Issue Tracker` sheet.
+        - **File 2**: PM Tracker Data (`.xlsx` or `.csv`) containing `PM Tracker B2C- B2B` sheet.
+        """)
         return
 
     st.sidebar.success(file_status_text)
