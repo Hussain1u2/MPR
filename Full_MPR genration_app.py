@@ -9,13 +9,8 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 import streamlit as st
-try:
-    import plotly.express as px
-    import plotly.graph_objects as go
-    HAS_PLOTLY = True
-except ImportError:
-    HAS_PLOTLY = False
-
+import plotly.express as px
+import plotly.graph_objects as go
 
 # Styling constants for OpenPyXL excel generation
 FONT = 'Arial'
@@ -79,7 +74,7 @@ def load_pm_tracker(source):
         if not rows:
             return pd.DataFrame()
 
-        # Check if rows[0] is a standard header row (e.g. flat single-sheet upload)
+        # Check if rows[0] is a standard header row (flat table format)
         first_row_str = [str(h).strip().lower() for h in rows[0] if h is not None]
         is_flat_table = any(k in first_row_str for k in ['zme', 'station id', 'charger id', 'pm status', 'due date']) or len(rows) <= 5
 
@@ -313,13 +308,15 @@ def build_pm_dashboard(wb, pm_df, prange):
         ws.column_dimensions[col].width = width
 
 
-def generate_workbook(source_input_or_issue, pm_input=None):
-    if pm_input is None:
-        issue_df = load_issue_tracker(source_input_or_issue)
-        pm_df = load_pm_tracker(source_input_or_issue)
+@st.cache_data(show_spinner=False)
+def generate_workbook_cached(source_bytes_or_path, pm_bytes_or_path=None):
+    """Cached workbook & DataFrame generator for instant responsive updates."""
+    if pm_bytes_or_path is None:
+        issue_df = load_issue_tracker(source_bytes_or_path)
+        pm_df = load_pm_tracker(source_bytes_or_path)
     else:
-        issue_df = load_issue_tracker(source_input_or_issue)
-        pm_df = load_pm_tracker(pm_input)
+        issue_df = load_issue_tracker(source_bytes_or_path)
+        pm_df = load_pm_tracker(pm_bytes_or_path)
 
     wb = Workbook()
     wb.remove(wb.active)
@@ -350,28 +347,33 @@ def generate_workbook(source_input_or_issue, pm_input=None):
     build_issue_dashboard(wb, issue_df, irange)
     build_pm_dashboard(wb, pm_df, prange)
     wb.active = 0
-    return wb, issue_df, pm_df
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue(), issue_df, pm_df
 
 
-def plot_pie_chart(labels, values, title, colors=None, hole=0.4):
-    """Renders a sleek Donut/Pie Chart with Plotly (or Streamlit fallback)."""
+def plot_pie_chart(labels, values, title, colors=None, hole=0.45):
+    """Renders a responsive, high-contrast Donut/Pie Chart."""
     if HAS_PLOTLY:
         fig = go.Figure(data=[go.Pie(
             labels=labels,
             values=values,
             hole=hole,
             marker_colors=colors if colors else ['#10B981', '#EF4444', '#F59E0B', '#2563EB', '#8B5CF6'],
-            textinfo='label+percent+value',
-            insidetextorientation='radial'
+            textinfo='percent+value',
+            hoverinfo='label+percent+value',
+            insidetextfont=dict(color='#FFFFFF', size=13, family='Inter')
         )])
         fig.update_layout(
-            title=dict(text=title, font=dict(size=14, color='#0F172A', family='Inter')),
-            margin=dict(l=10, r=10, t=40, b=10),
-            height=320,
+            title=dict(text=title, font=dict(size=14, color='#0F172A', family='Inter', weight='bold')),
+            margin=dict(l=15, r=15, t=45, b=15),
+            height=300,
             showlegend=True,
-            legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5)
+            legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5)
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'responsive': True})
     else:
         df_pie = pd.DataFrame({'Category': labels, 'Value': values})
         st.write(f"**{title}**")
@@ -379,7 +381,7 @@ def plot_pie_chart(labels, values, title, colors=None, hole=0.4):
 
 
 def plot_vertical_bar(df, x_col, y_col, title, color_hex="#2563EB"):
-    """Renders a vertical column bar chart."""
+    """Renders a clean vertical bar chart with exact value labels."""
     if HAS_PLOTLY:
         fig = px.bar(
             df,
@@ -389,24 +391,24 @@ def plot_vertical_bar(df, x_col, y_col, title, color_hex="#2563EB"):
             text=y_col,
             color_discrete_sequence=[color_hex]
         )
-        fig.update_traces(texttemplate='%{text}', textposition='outside')
+        fig.update_traces(texttemplate='%{text}', textposition='outside', textfont=dict(size=12, family='Inter'))
         fig.update_layout(
-            margin=dict(l=10, r=10, t=40, b=10),
-            height=340,
+            margin=dict(l=15, r=15, t=45, b=15),
+            height=320,
             font=dict(family='Inter', color='#0F172A'),
             xaxis_title=x_col,
             yaxis_title=y_col,
             plot_bgcolor='rgba(0,0,0,0)',
             yaxis=dict(showgrid=True, gridcolor='#E2E8F0')
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'responsive': True})
     else:
         st.write(f"**{title}**")
-        st.bar_chart(df.set_index(x_col)[y_col], height=300)
+        st.bar_chart(df.set_index(x_col)[y_col], height=280)
 
 
 def plot_grouped_bar(df, x_col, y_cols, title, colors=None):
-    """Renders a multi-series grouped column chart."""
+    """Renders a responsive multi-series grouped column chart."""
     if HAS_PLOTLY:
         fig = go.Figure()
         palette = colors if colors else ['#10B981', '#EF4444', '#2563EB', '#F59E0B']
@@ -417,18 +419,19 @@ def plot_grouped_bar(df, x_col, y_cols, title, colors=None):
                 y=df[col],
                 marker_color=palette[idx % len(palette)],
                 text=df[col],
-                textposition='auto'
+                textposition='auto',
+                textfont=dict(size=11, family='Inter')
             ))
         fig.update_layout(
             barmode='group',
-            title=dict(text=title, font=dict(size=14, color='#0F172A', family='Inter')),
-            margin=dict(l=10, r=10, t=40, b=10),
-            height=340,
+            title=dict(text=title, font=dict(size=14, color='#0F172A', family='Inter', weight='bold')),
+            margin=dict(l=15, r=15, t=45, b=15),
+            height=320,
             legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
             plot_bgcolor='rgba(0,0,0,0)',
             yaxis=dict(showgrid=True, gridcolor='#E2E8F0')
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'responsive': True})
     else:
         st.write(f"**{title}**")
         st.dataframe(df.set_index(x_col)[y_cols], use_container_width=True)
@@ -453,29 +456,29 @@ def run_streamlit_app():
 
         .exec-header-box {
             background: linear-gradient(135deg, #0F172A 0%, #1E293B 100%);
-            padding: 1.5rem 2rem;
+            padding: 1.2rem 1.8rem;
             border-radius: 12px;
             color: #FFFFFF;
             box-shadow: 0 4px 20px rgba(15, 23, 42, 0.15);
-            margin-bottom: 1.5rem;
+            margin-bottom: 1.2rem;
             border-left: 6px solid #2563EB;
         }
 
         .exec-badge {
             background-color: #2563EB;
             color: #FFFFFF;
-            font-size: 0.75rem;
+            font-size: 0.72rem;
             font-weight: 700;
-            padding: 4px 10px;
+            padding: 3px 9px;
             border-radius: 20px;
             letter-spacing: 0.08em;
             text-transform: uppercase;
             display: inline-block;
-            margin-bottom: 0.5rem;
+            margin-bottom: 0.4rem;
         }
 
         .exec-title {
-            font-size: 2rem;
+            font-size: 1.8rem;
             font-weight: 700;
             color: #F8FAFC;
             margin: 0;
@@ -483,9 +486,9 @@ def run_streamlit_app():
         }
 
         .exec-subtitle {
-            font-size: 0.95rem;
+            font-size: 0.9rem;
             color: #94A3B8;
-            margin-top: 0.4rem;
+            margin-top: 0.3rem;
             margin-bottom: 0;
         }
 
@@ -493,12 +496,8 @@ def run_streamlit_app():
             background: #FFFFFF;
             border: 1px solid #E2E8F0;
             border-radius: 10px;
-            padding: 1rem 1.2rem;
+            padding: 0.9rem 1.1rem;
             box-shadow: 0 2px 4px rgba(0, 0, 0, 0.02);
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
-        }
-        .metric-card:hover {
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
         }
         .metric-card.blue { border-top: 4px solid #2563EB; }
         .metric-card.green { border-top: 4px solid #10B981; }
@@ -506,30 +505,30 @@ def run_streamlit_app():
         .metric-card.amber { border-top: 4px solid #F59E0B; }
 
         .metric-label {
-            font-size: 0.75rem;
+            font-size: 0.72rem;
             font-weight: 600;
             color: #64748B;
             text-transform: uppercase;
             letter-spacing: 0.05em;
         }
         .metric-val {
-            font-size: 1.7rem;
+            font-size: 1.6rem;
             font-weight: 700;
             color: #0F172A;
             margin-top: 0.2rem;
         }
         .metric-sub {
-            font-size: 0.75rem;
+            font-size: 0.72rem;
             color: #64748B;
             margin-top: 0.1rem;
         }
 
         .section-header {
-            font-size: 1.1rem;
+            font-size: 1.05rem;
             font-weight: 700;
             color: #0F172A;
-            margin-top: 1rem;
-            margin-bottom: 0.8rem;
+            margin-top: 0.8rem;
+            margin-bottom: 0.6rem;
             display: flex;
             align-items: center;
             gap: 0.5rem;
@@ -548,7 +547,7 @@ def run_streamlit_app():
         <div class="exec-header-box">
             <span class="exec-badge">ChargeZone Executive Governance</span>
             <h1 class="exec-title">Monthly Progress Report (MPR) & PM F-01 Dashboard</h1>
-            <p class="exec-subtitle">Executive Performance Analytics for Operations, Preventive Maintenance (PM) & SLA Tracking.</p>
+            <p class="exec-subtitle">Executive Analytics Engine for Operations, Preventive Maintenance (PM) & SLA Tracking.</p>
         </div>
     """, unsafe_allow_html=True)
 
@@ -568,7 +567,7 @@ def run_streamlit_app():
     file_status_text = ""
 
     if upload_mode == "📁 Single Merged File (1 Workbook)":
-        uploaded_file = st.sidebar.file_uploader("Upload Merged Tracker File (.xlsx)", type=["xlsx", "csv"], key="single_file")
+        uploaded_file = st.sidebar.file_uploader("Upload Merged Tracker File (.xlsx / .csv)", type=["xlsx", "csv"], key="single_file")
         use_default = False
         default_path = "issue,pm tracker merged.xlsx"
         
@@ -581,7 +580,7 @@ def run_streamlit_app():
                 pass
 
         if uploaded_file is not None:
-            issue_input = uploaded_file
+            issue_input = uploaded_file.getvalue()
             file_status_text = f"✓ Connected Merged File: `{uploaded_file.name}`"
         elif use_default:
             issue_input = default_path
@@ -593,8 +592,8 @@ def run_streamlit_app():
         pm_file = st.sidebar.file_uploader("2️⃣ PM Tracker File (.xlsx / .csv)", type=["xlsx", "csv"], key="pm_file")
 
         if issue_file is not None and pm_file is not None:
-            issue_input = issue_file
-            pm_input = pm_file
+            issue_input = issue_file.getvalue()
+            pm_input = pm_file.getvalue()
             file_status_text = f"✓ Connected Issue: `{issue_file.name}` & PM: `{pm_file.name}`"
         elif issue_file is not None or pm_file is not None:
             st.sidebar.warning("⚠️ Please upload BOTH the Issue Tracker file and the PM Tracker file.")
@@ -603,8 +602,6 @@ def run_streamlit_app():
         st.info("📌 **Upload Required**: Select your upload mode in the sidebar (Single Merged File or 2 Separate Files) and upload your tracker data to load the dashboard.")
         
         st.markdown("### 📥 Upload Tracker Files")
-        st.markdown("Choose your upload preference from the **Control Panel sidebar** on the left:")
-        
         c_mode1, c_mode2 = st.columns(2)
         with c_mode1:
             st.markdown("""
@@ -622,13 +619,10 @@ def run_streamlit_app():
     st.sidebar.success(file_status_text)
     st.sidebar.markdown("---")
 
-    # Processing Workbook
+    # Processing Workbook with Caching
     with st.spinner("Processing Operational Data Engine..."):
         try:
-            wb, raw_issue_df, raw_pm_df = generate_workbook(issue_input, pm_input)
-            output_buffer = io.BytesIO()
-            wb.save(output_buffer)
-            output_buffer.seek(0)
+            excel_bytes, raw_issue_df, raw_pm_df = generate_workbook_cached(issue_input, pm_input)
         except Exception as e:
             st.error(f"⚠️ **Processing Error**: {e}")
             st.exception(e)
@@ -637,13 +631,11 @@ def run_streamlit_app():
     # Sidebar Interactive Filters
     st.sidebar.markdown("#### 2. Dashboard Filters")
 
-    # Customer Segment Filter
     segment_options = ["All Segments"]
     if 'B2B/ B2C' in raw_issue_df.columns:
         segment_options += sorted(raw_issue_df['B2B/ B2C'].dropna().unique().tolist())
     selected_segment = st.sidebar.selectbox("Filter by Customer Segment (B2B / B2C):", segment_options)
 
-    # Date Filter
     min_date, max_date = None, None
     if 'Issue Date Parsed' in raw_issue_df.columns and not raw_issue_df['Issue Date Parsed'].dropna().empty:
         min_date = raw_issue_df['Issue Date Parsed'].min().date()
@@ -676,7 +668,7 @@ def run_streamlit_app():
 
     st.sidebar.download_button(
         label="⚡ Download MPR Excel Report",
-        data=output_buffer,
+        data=excel_bytes,
         file_name=out_filename,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
@@ -685,23 +677,23 @@ def run_streamlit_app():
 
     # Main Tabs
     tab_issues, tab_pm, tab_raw = st.tabs([
-        "📉 Issue MPR Presentation Charts & Details",
-        "🛠️ PM F-01 Presentation Charts & Details",
-        "📋 Master Data Governance Explorer"
+        "📉 Issue MPR Charts & Tables",
+        "🛠️ PM F-01 Charts & Tables",
+        "📋 Master Data Explorer"
     ])
 
     # ---------------------------------------------------------
-    # TAB 1: ISSUE MPR DASHBOARD & PRESENTATION CHARTS
+    # TAB 1: ISSUE MPR DASHBOARD (CHARTS + TABLES SIDE-BY-SIDE)
     # ---------------------------------------------------------
     with tab_issues:
-        st.markdown('<div class="section-header">📊 Operational Issue & SLA Analytics Executive Presentation</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-header">📊 Operational Issue & SLA Analytics Performance</div>', unsafe_allow_html=True)
 
         total_issues = len(filtered_issue_df)
         within_tat = len(filtered_issue_df[filtered_issue_df['TAT Compliance'].astype(str).str.upper() == 'YES']) if 'TAT Compliance' in filtered_issue_df.columns else 0
         without_tat = len(filtered_issue_df[filtered_issue_df['TAT Compliance'].astype(str).str.upper() == 'NO']) if 'TAT Compliance' in filtered_issue_df.columns else 0
         tat_eff = (within_tat / total_issues * 100) if total_issues > 0 else 0.0
 
-        # KPI Summary Cards
+        # High-Impact KPI Row
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             st.markdown(f"""
@@ -732,56 +724,58 @@ def run_streamlit_app():
                 <div class="metric-card {'green' if tat_eff >= 85 else 'amber'}">
                     <div class="metric-label">TAT Efficiency %</div>
                     <div class="metric-val">{tat_eff:.1f}%</div>
-                    <div class="metric-sub">Target: ≥ 85.0%</div>
+                    <div class="metric-sub">Target Benchmark: ≥ 85.0%</div>
                 </div>
             """, unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # Presentation Charts Row 1: Donut Chart (SLA Ratio) & ZME Vertical Bar Chart
-        col_pie_sla, col_bar_zme = st.columns([5, 7])
+        # 1. ZME Summary: Chart & Table Side-by-Side
+        st.markdown('<div class="section-header">1. ZME Performance & TAT Efficiency Breakdown</div>', unsafe_allow_html=True)
+        col_zme_c, col_zme_t = st.columns([6, 6])
 
-        with col_pie_sla:
-            st.markdown('<div class="section-header">🍩 1. Overall SLA Compliance Ratio (Pie Chart)</div>', unsafe_allow_html=True)
+        if 'ZME' in filtered_issue_df.columns and 'TAT Compliance' in filtered_issue_df.columns:
+            zme_df = filtered_issue_df.groupby('ZME').agg(
+                Total_Issues=('Status', 'count'),
+                Within_TAT=('TAT Compliance', lambda s: (s.astype(str).str.upper() == 'YES').sum()),
+                Without_TAT=('TAT Compliance', lambda s: (s.astype(str).str.upper() == 'NO').sum())
+            ).reset_index()
+            zme_df['TAT Efficiency %'] = (zme_df['Within_TAT'] / zme_df['Total_Issues'] * 100).round(1)
+            zme_df = zme_df.rename(columns={'ZME': 'ZME Name'}).sort_values(by='Total_Issues', ascending=False)
+
+            with col_zme_c:
+                plot_vertical_bar(zme_df, x_col='ZME Name', y_col='Total_Issues', title="Total Issues Logged by ZME", color_hex="#2563EB")
+
+            with col_zme_t:
+                st.write("##### 📊 ZME SLA Data Table")
+                st.dataframe(
+                    zme_df.style.format({
+                        'Total_Issues': '{:,}',
+                        'Within_TAT': '{:,}',
+                        'Without_TAT': '{:,}',
+                        'TAT Efficiency %': '{:.1f}%'
+                    }).background_gradient(subset=['TAT Efficiency %'], cmap='Blues'),
+                    use_container_width=True,
+                    height=290
+                )
+
+        st.markdown("---")
+
+        # 2. SLA Compliance Ratio & Zone Breakdown: Side-by-Side
+        col_sla_chart, col_zone_chart = st.columns([5, 7])
+
+        with col_sla_chart:
+            st.markdown('<div class="section-header">🍩 2. SLA Compliance Ratio (Pie Chart)</div>', unsafe_allow_html=True)
             plot_pie_chart(
                 labels=['Within TAT (Compliant)', 'Without TAT (Breached)'],
                 values=[within_tat, without_tat],
-                title="SLA Compliance Distribution",
+                title="Overall SLA Compliance Share",
                 colors=['#10B981', '#EF4444'],
                 hole=0.45
             )
 
-        with col_bar_zme:
-            st.markdown('<div class="section-header">📊 2. ZME Performance & TAT Efficiency (Vertical Chart)</div>', unsafe_allow_html=True)
-            if 'ZME' in filtered_issue_df.columns and 'TAT Compliance' in filtered_issue_df.columns:
-                zme_df = filtered_issue_df.groupby('ZME').agg(
-                    Total_Issues=('Status', 'count'),
-                    Within_TAT=('TAT Compliance', lambda s: (s.astype(str).str.upper() == 'YES').sum()),
-                    Without_TAT=('TAT Compliance', lambda s: (s.astype(str).str.upper() == 'NO').sum())
-                ).reset_index()
-                zme_df['TAT Efficiency %'] = (zme_df['Within_TAT'] / zme_df['Total_Issues'] * 100).round(1)
-                zme_df = zme_df.rename(columns={'ZME': 'ZME Name'}).sort_values(by='Total_Issues', ascending=False)
-                
-                plot_vertical_bar(zme_df, x_col='ZME Name', y_col='Total_Issues', title="Total Issues Logged per ZME", color_hex="#2563EB")
-
-                with st.expander("📄 View ZME Summary Data Table"):
-                    st.dataframe(
-                        zme_df.style.format({
-                            'Total_Issues': '{:,}',
-                            'Within_TAT': '{:,}',
-                            'Without_TAT': '{:,}',
-                            'TAT Efficiency %': '{:.1f}%'
-                        }).background_gradient(subset=['TAT Efficiency %'], cmap='Blues'),
-                        use_container_width=True
-                    )
-
-        st.markdown("---")
-
-        # Presentation Charts Row 2: Zone Grouped Bar Chart & Ticket Status Bar Chart
-        col_zone_chart, col_status_chart = st.columns([6, 6])
-
         with col_zone_chart:
-            st.markdown('<div class="section-header">🏢 3. Zone CM Efficiency (Grouped Column Chart)</div>', unsafe_allow_html=True)
+            st.markdown('<div class="section-header">🏢 3. Zone CM Efficiency (Grouped Chart & Table)</div>', unsafe_allow_html=True)
             if 'Zone' in filtered_issue_df.columns and 'TAT Compliance' in filtered_issue_df.columns:
                 zone_df = filtered_issue_df.groupby('Zone').agg(
                     Total_Issues=('Status', 'count'),
@@ -796,63 +790,64 @@ def run_streamlit_app():
                     df=zone_df,
                     x_col='Zone',
                     y_cols=['Within_TAT', 'Without_TAT'],
-                    title="Incidents Resolved Within vs Without TAT by Zone",
+                    title="Work Orders Within vs Without TAT by Zone",
                     colors=['#10B981', '#EF4444']
                 )
 
-                with st.expander("📄 View Zone Summary Data Table"):
-                    st.dataframe(
-                        zone_df[['Zone', 'Total_Issues', 'CM Efficiency (Within TAT) %', 'CM Efficiency (Without TAT) %']].style.format({
-                            'Total_Issues': '{:,}',
-                            'CM Efficiency (Within TAT) %': '{:.1f}%',
-                            'CM Efficiency (Without TAT) %': '{:.1f}%'
-                        }).background_gradient(subset=['CM Efficiency (Within TAT) %'], cmap='Greens'),
-                        use_container_width=True
-                    )
-
-        with col_status_chart:
-            st.markdown('<div class="section-header">📌 4. Incident Status Pipeline (Vertical Bar Chart)</div>', unsafe_allow_html=True)
-            if 'Status' in filtered_issue_df.columns:
-                status_counts = filtered_issue_df['Status'].value_counts().reset_index()
-                status_counts.columns = ['Status', 'Count']
-                plot_vertical_bar(status_counts, x_col='Status', y_col='Count', title="Work Order Status Pipeline", color_hex="#8B5CF6")
+                st.dataframe(
+                    zone_df[['Zone', 'Total_Issues', 'CM Efficiency (Within TAT) %', 'CM Efficiency (Without TAT) %']].style.format({
+                        'Total_Issues': '{:,}',
+                        'CM Efficiency (Within TAT) %': '{:.1f}%',
+                        'CM Efficiency (Without TAT) %': '{:.1f}%'
+                    }).background_gradient(subset=['CM Efficiency (Within TAT) %'], cmap='Greens'),
+                    use_container_width=True
+                )
 
         st.markdown("---")
 
-        # Presentation Charts Row 3: Severity Donut Chart & Customer Segment Pie Chart
-        col_sev_chart, col_cust_chart = st.columns([6, 6])
+        # 3. Status & Severity & Customer Segment (Chart + Table Pairs)
+        c_stat, c_sev, c_cust = st.columns(3)
 
-        with col_sev_chart:
-            st.markdown('<div class="section-header">🚨 5. Severity Risk Profile (Pie Chart)</div>', unsafe_allow_html=True)
+        with c_stat:
+            st.markdown('<div class="section-header">📌 4. Status Breakdown</div>', unsafe_allow_html=True)
+            if 'Status' in filtered_issue_df.columns:
+                status_counts = filtered_issue_df['Status'].value_counts().reset_index()
+                status_counts.columns = ['Status', 'Count']
+                plot_vertical_bar(status_counts, x_col='Status', y_col='Count', title="Status Pipeline", color_hex="#8B5CF6")
+                st.dataframe(status_counts, use_container_width=True)
+
+        with c_sev:
+            st.markdown('<div class="section-header">🚨 5. Severity Risk Profile</div>', unsafe_allow_html=True)
             if 'Severity' in filtered_issue_df.columns:
                 sev_counts = filtered_issue_df['Severity'].value_counts().reset_index()
                 sev_counts.columns = ['Severity', 'Count']
                 plot_pie_chart(
                     labels=sev_counts['Severity'].tolist(),
                     values=sev_counts['Count'].tolist(),
-                    title="Incident Breakdown by Severity",
+                    title="Severity Share",
                     colors=['#EF4444', '#F59E0B', '#3B82F6', '#10B981'],
                     hole=0.4
                 )
+                st.dataframe(sev_counts, use_container_width=True)
 
-        with col_cust_chart:
-            st.markdown('<div class="section-header">👥 6. Customer Segment Distribution (B2B vs B2C Pie Chart)</div>', unsafe_allow_html=True)
+        with c_cust:
+            st.markdown('<div class="section-header">👥 6. Customer Segment (B2B/B2C)</div>', unsafe_allow_html=True)
             if 'B2B/ B2C' in filtered_issue_df.columns:
                 cust_counts = filtered_issue_df['B2B/ B2C'].value_counts().reset_index()
                 cust_counts.columns = ['Segment', 'Count']
                 plot_pie_chart(
                     labels=cust_counts['Segment'].tolist(),
                     values=cust_counts['Count'].tolist(),
-                    title="Business Portfolio Breakdown (B2B / B2C)",
+                    title="Segment Share",
                     colors=['#2563EB', '#10B981'],
                     hole=0.4
                 )
+                st.dataframe(cust_counts, use_container_width=True)
 
         st.markdown("---")
 
-        # Repetitive Faults
-        st.markdown('<div class="section-header">⚠️ 7. Repetitive Faults (Top Issue Type & Sub-Type)</div>', unsafe_allow_html=True)
-        st.caption("Stations experiencing multiple occurrences (≥ 2) of identical Issue Sub-Types.")
+        # 4. Repetitive Faults: Side-by-Side Chart + Table
+        st.markdown('<div class="section-header">⚠️ 7. Repetitive Faults (Station ID & Sub-Type ≥ 2)</div>', unsafe_allow_html=True)
 
         if 'Station ID' in filtered_issue_df.columns and 'Issue Sub-Type' in filtered_issue_df.columns:
             group_cols = ['Station ID']
@@ -867,25 +862,25 @@ def run_streamlit_app():
                 col_rep_chart, col_rep_tbl = st.columns([6, 6])
                 with col_rep_chart:
                     repeats['Station_Fault'] = repeats['Station ID'].astype(str) + " - " + repeats['Issue Sub-Type'].astype(str)
-                    plot_vertical_bar(repeats.head(10), x_col='Station_Fault', y_col='Occurrences', title="Top 10 Repetitive Station Faults", color_hex="#DC2626")
+                    plot_vertical_bar(repeats.head(10), x_col='Station_Fault', y_col='Occurrences', title="Top Repetitive Fault Patterns", color_hex="#DC2626")
                 with col_rep_tbl:
-                    st.write("##### Repetitive Fault Data Table")
+                    st.write("##### Repetitive Station Faults Table")
                     st.dataframe(
                         repeats.style.format({'Occurrences': '{:,}'}),
-                        use_container_width=True
+                        use_container_width=True,
+                        height=280
                     )
             else:
-                st.success("✅ Zero repetitive station faults found in selected dataset.")
+                st.success("✅ Zero repetitive station faults detected in current period dataset.")
 
     # ---------------------------------------------------------
-    # TAB 2: PM F-01 DASHBOARD & PRESENTATION CHARTS
+    # TAB 2: PM F-01 DASHBOARD (CHARTS + TABLES SIDE-BY-SIDE)
     # ---------------------------------------------------------
     with tab_pm:
-        st.markdown('<div class="section-header">🛠️ Preventive Maintenance (PM F-01) Executive Presentation</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-header">🛠️ Preventive Maintenance (PM F-01) Operational Analytics</div>', unsafe_allow_html=True)
 
         pm_df = raw_pm_df.copy()
 
-        # Compute Metrics for PM F-01
         total_pm_planning = len(pm_df)
         pm_done = len(pm_df[pm_df['PM Status'].astype(str).str.upper() == 'YES']) if 'PM Status' in pm_df.columns else 0
         pm_pending = len(pm_df[pm_df['PM Status'].astype(str).str.upper() == 'NO']) if 'PM Status' in pm_df.columns else 0
@@ -906,14 +901,14 @@ def run_streamlit_app():
         total_chargers = len(pm_df['Charger ID'].dropna().unique()) if 'Charger ID' in pm_df.columns else len(pm_df)
         total_stations = len(pm_df['Station ID'].dropna().unique()) if 'Station ID' in pm_df.columns else len(pm_df)
 
-        # PM KPI Cards Row
+        # PM High-Impact KPI Row
         p1, p2, p3, p4, p5 = st.columns(5)
         with p1:
             st.markdown(f"""
                 <div class="metric-card blue">
                     <div class="metric-label">Total Chargers</div>
                     <div class="metric-val">{total_chargers:,}</div>
-                    <div class="metric-sub">Active Assets</div>
+                    <div class="metric-sub">Active Infrastructure</div>
                 </div>
             """, unsafe_allow_html=True)
         with p2:
@@ -929,7 +924,7 @@ def run_streamlit_app():
                 <div class="metric-card green">
                     <div class="metric-label">PM Done</div>
                     <div class="metric-val">{pm_done:,}</div>
-                    <div class="metric-sub">Completed</div>
+                    <div class="metric-sub">Verified & Completed</div>
                 </div>
             """, unsafe_allow_html=True)
         with p4:
@@ -945,13 +940,13 @@ def run_streamlit_app():
                 <div class="metric-card {'green' if pm_eff >= 90 else 'amber'}">
                     <div class="metric-label">PM Efficiency</div>
                     <div class="metric-val">{pm_eff:.1f}%</div>
-                    <div class="metric-sub">Target: ≥ 90.0%</div>
+                    <div class="metric-sub">Target Benchmark: ≥ 90.0%</div>
                 </div>
             """, unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # Presentation Charts Row 1: PM Status Donut Chart & ZME PM Completion Rate Vertical Bar Chart
+        # PM Status Chart & ZME Grouped Bar Chart: Side-by-Side
         col_pm_pie, col_pm_bar = st.columns([5, 7])
 
         with col_pm_pie:
@@ -959,7 +954,7 @@ def run_streamlit_app():
             plot_pie_chart(
                 labels=['PM Done (Completed)', 'PM Pending (Scheduled)', 'Advance PM Done'],
                 values=[pm_done, pm_pending, advance_done],
-                title="PM Execution Status Distribution",
+                title="PM Execution Distribution Share",
                 colors=['#10B981', '#EF4444', '#2563EB'],
                 hole=0.45
             )
@@ -1010,37 +1005,41 @@ def run_streamlit_app():
                     df=pm_summary_df,
                     x_col='ZME Name',
                     y_cols=['PM Planning', 'PM Done', 'PM Pending'],
-                    title="PM Work Orders Scheduled vs Completed per ZME",
+                    title="Scheduled vs Completed PM Work Orders by ZME",
                     colors=['#2563EB', '#10B981', '#EF4444']
                 )
 
         st.markdown("---")
 
-        # Presentation Charts Row 2: Asset Infrastructure Density Chart & PM Detailed Table
-        st.markdown('<div class="section-header">⚙️ 3. Asset Infrastructure & Detailed PM Performance Table</div>', unsafe_allow_html=True)
-        
-        if 'ZME' in pm_df.columns and 'PM Status' in pm_df.columns:
-            plot_grouped_bar(
-                df=pm_summary_df,
-                x_col='ZME Name',
-                y_cols=['Total Chargers', 'Total Stations'],
-                title="Total Chargers vs Total Stations Managed by ZME",
-                colors=['#0F172A', '#3B82F6']
-            )
+        # PM Asset Density Chart & Detailed Table: Side-by-Side
+        st.markdown('<div class="section-header">⚙️ 3. Asset Infrastructure & Detailed PM Summary Table</div>', unsafe_allow_html=True)
+        col_density_c, col_density_t = st.columns([6, 6])
 
-            st.write("##### Detailed PM F-01 Breakdown Table")
-            st.dataframe(
-                pm_summary_df.style.format({
-                    'Total Chargers': '{:,}',
-                    'Total Stations': '{:,}',
-                    'PM Planning': '{:,}',
-                    'PM Done': '{:,}',
-                    'PM Pending': '{:,}',
-                    'Advance PM Done': '{:,}',
-                    'PM Efficiency (%)': '{:.1f}%'
-                }).background_gradient(subset=['PM Efficiency (%)'], cmap='Greens'),
-                use_container_width=True
-            )
+        if 'ZME' in pm_df.columns and 'PM Status' in pm_df.columns:
+            with col_density_c:
+                plot_grouped_bar(
+                    df=pm_summary_df,
+                    x_col='ZME Name',
+                    y_cols=['Total Chargers', 'Total Stations'],
+                    title="Total Chargers vs Total Stations by ZME",
+                    colors=['#0F172A', '#3B82F6']
+                )
+
+            with col_density_t:
+                st.write("##### Detailed PM F-01 Breakdown Data Table")
+                st.dataframe(
+                    pm_summary_df.style.format({
+                        'Total Chargers': '{:,}',
+                        'Total Stations': '{:,}',
+                        'PM Planning': '{:,}',
+                        'PM Done': '{:,}',
+                        'PM Pending': '{:,}',
+                        'Advance PM Done': '{:,}',
+                        'PM Efficiency (%)': '{:.1f}%'
+                    }).background_gradient(subset=['PM Efficiency (%)'], cmap='Greens'),
+                    use_container_width=True,
+                    height=300
+                )
 
     # ---------------------------------------------------------
     # TAB 3: MASTER DATA EXPLORER
@@ -1061,15 +1060,17 @@ if __name__ == '__main__':
         if len(sys.argv) == 2 or (len(sys.argv) >= 3 and sys.argv[2].endswith('.xlsx') and not sys.argv[1].endswith('.xlsx')):
             src_path = sys.argv[1]
             out_path = sys.argv[2] if len(sys.argv) > 2 else f"MPR_Report_{datetime.now():%Y-%m}.xlsx"
-            wb, _, _ = generate_workbook(src_path)
-            wb.save(out_path)
+            wb, _, _ = generate_workbook_cached(src_path)
+            with open(out_path, 'wb') as f:
+                f.write(wb)
             print(f'Written: {out_path}')
         else:
             issue_path = sys.argv[1]
             pm_path = sys.argv[2]
             out_path = sys.argv[3] if len(sys.argv) > 3 else f"MPR_Report_{datetime.now():%Y-%m}.xlsx"
-            wb, _, _ = generate_workbook(issue_path, pm_path)
-            wb.save(out_path)
+            wb, _, _ = generate_workbook_cached(issue_path, pm_path)
+            with open(out_path, 'wb') as f:
+                f.write(wb)
             print(f'Written: {out_path}')
     else:
         run_streamlit_app()
