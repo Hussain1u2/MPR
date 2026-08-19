@@ -16,14 +16,14 @@ HAS_PLOTLY = True
 
 # Styling constants for OpenPyXL excel generation
 FONT = 'Arial'
-HEADER_FILL = PatternFill('solid', fgColor='1F4E78')
+HEADER_FILL = PatternFill('solid', fgColor='991B1B')
 HEADER_FONT = Font(name=FONT, size=10, bold=True, color='FFFFFF')
-TITLE_FONT = Font(name=FONT, size=14, bold=True, color='1F4E78')
-SECTION_FONT = Font(name=FONT, size=11, bold=True, color='1F4E78')
-NOTE_FONT = Font(name=FONT, size=9, italic=True, color='7F7F7F')
+TITLE_FONT = Font(name=FONT, size=14, bold=True, color='991B1B')
+SECTION_FONT = Font(name=FONT, size=11, bold=True, color='991B1B')
+NOTE_FONT = Font(name=FONT, size=9, italic=True, color='6B7280')
 CELL_FONT = Font(name=FONT, size=10)
 BOLD_CELL = Font(name=FONT, size=10, bold=True)
-BORDER = Border(*(Side(style='thin', color='D9D9D9'),) * 4)
+BORDER = Border(*(Side(style='thin', color='E5E7EB'),) * 4)
 DATE_FMT = 'dd-mmm-yy'
 PCT_FMT = '0.0%'
 ISSUE_RANGE_END = 5000
@@ -487,13 +487,13 @@ def plot_pie_chart(labels, values, title, colors=None, hole=0.45):
             labels=labels,
             values=values,
             hole=hole,
-            marker_colors=colors if colors else ['#10B981', '#EF4444', '#F59E0B', '#2563EB', '#8B5CF6'],
+            marker_colors=colors if colors else ['#DC2626', '#991B1B', '#16A34A', '#F59E0B', '#475569'],
             textinfo='percent+value',
             hoverinfo='label+percent+value',
             insidetextfont=dict(color='#FFFFFF', size=13, family='Inter')
         )])
         fig.update_layout(
-            title=dict(text=title, font=dict(size=14, color='#0F172A', family='Inter', weight='bold')),
+            title=dict(text=title, font=dict(size=14, color='#111827', family='Inter', weight='bold')),
             margin=dict(l=15, r=15, t=45, b=15),
             height=300,
             showlegend=True,
@@ -506,7 +506,7 @@ def plot_pie_chart(labels, values, title, colors=None, hole=0.45):
         st.dataframe(df_pie, use_container_width=True)
 
 
-def plot_vertical_bar(df, x_col, y_col, title, color_hex="#2563EB"):
+def plot_vertical_bar(df, x_col, y_col, title, color_hex="#DC2626"):
     """Renders a clean vertical bar chart with exact value labels."""
     if HAS_PLOTLY:
         fig = px.bar(
@@ -521,11 +521,11 @@ def plot_vertical_bar(df, x_col, y_col, title, color_hex="#2563EB"):
         fig.update_layout(
             margin=dict(l=15, r=15, t=45, b=15),
             height=320,
-            font=dict(family='Inter', color='#0F172A'),
+            font=dict(family='Inter', color='#111827'),
             xaxis_title=x_col,
             yaxis_title=y_col,
             plot_bgcolor='rgba(0,0,0,0)',
-            yaxis=dict(showgrid=True, gridcolor='#E2E8F0')
+            yaxis=dict(showgrid=True, gridcolor='#F3F4F6')
         )
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'responsive': True})
     else:
@@ -537,7 +537,7 @@ def plot_grouped_bar(df, x_col, y_cols, title, colors=None):
     """Renders a responsive multi-series grouped column chart."""
     if HAS_PLOTLY:
         fig = go.Figure()
-        palette = colors if colors else ['#10B981', '#EF4444', '#2563EB', '#F59E0B']
+        palette = colors if colors else ['#DC2626', '#991B1B', '#16A34A', '#F59E0B']
         for idx, col in enumerate(y_cols):
             fig.add_trace(go.Bar(
                 name=col,
@@ -550,12 +550,12 @@ def plot_grouped_bar(df, x_col, y_cols, title, colors=None):
             ))
         fig.update_layout(
             barmode='group',
-            title=dict(text=title, font=dict(size=14, color='#0F172A', family='Inter', weight='bold')),
+            title=dict(text=title, font=dict(size=14, color='#111827', family='Inter', weight='bold')),
             margin=dict(l=15, r=15, t=45, b=15),
             height=320,
             legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
             plot_bgcolor='rgba(0,0,0,0)',
-            yaxis=dict(showgrid=True, gridcolor='#E2E8F0')
+            yaxis=dict(showgrid=True, gridcolor='#F3F4F6')
         )
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'responsive': True})
     else:
@@ -565,105 +565,158 @@ def plot_grouped_bar(df, x_col, y_cols, title, colors=None):
 
 def run_streamlit_app():
     st.set_page_config(
-        page_title="ChargeZone | Monthly Progress Report (MPR) Executive Dashboard",
+        page_title="ChargeZone | Executive MPR & PM Dashboard",
         page_icon="⚡",
         layout="wide",
         initial_sidebar_state="expanded"
     )
 
-    # Professional Executive Styling
+    # Professional Executive Styling - White Background & Red Theme (Pure Python Embedded)
     st.markdown("""
         <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
         
-        html, body, [class*="css"] {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        /* Force White Background on Main Container & Header */
+        .stApp, [data-testid="stMain"], [data-testid="stHeader"] {
+            background-color: #FFFFFF !important;
         }
 
+        [data-testid="stSidebar"] {
+            background-color: #FAFAFA !important;
+            border-right: 1px solid #F3F4F6 !important;
+        }
+
+        /* Dark Charcoal Typography */
+        html, body, [class*="css"], p, span, label, div {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            color: #111827;
+        }
+
+        /* Executive Red Buttons */
+        .stButton > button, div[data-testid="stDownloadButton"] > button {
+            background: linear-gradient(135deg, #B91C1C 0%, #DC2626 100%) !important;
+            color: #FFFFFF !important;
+            border-radius: 8px !important;
+            font-weight: 700 !important;
+            border: none !important;
+            padding: 0.6rem 1.2rem !important;
+            box-shadow: 0 4px 12px rgba(185, 28, 28, 0.25) !important;
+            transition: all 0.2s ease !important;
+        }
+        .stButton > button:hover, div[data-testid="stDownloadButton"] > button:hover {
+            background: linear-gradient(135deg, #991B1B 0%, #B91C1C 100%) !important;
+            box-shadow: 0 6px 16px rgba(153, 27, 27, 0.35) !important;
+        }
+
+        /* Streamlit Tabs Red Accent */
+        button[data-baseweb="tab"] {
+            font-weight: 700 !important;
+            color: #4B5563 !important;
+            font-size: 0.95rem !important;
+        }
+        button[data-baseweb="tab"][aria-selected="true"] {
+            color: #991B1B !important;
+            border-bottom-color: #DC2626 !important;
+        }
+        div[data-baseweb="tab-highlight"] {
+            background-color: #DC2626 !important;
+        }
+
+        /* Header Box */
         .exec-header-box {
-            background: linear-gradient(135deg, #0F172A 0%, #1E293B 100%);
-            padding: 1.2rem 1.8rem;
+            background: linear-gradient(135deg, #7F1D1D 0%, #B91C1C 50%, #DC2626 100%);
+            padding: 1.4rem 2rem;
             border-radius: 12px;
             color: #FFFFFF;
-            box-shadow: 0 4px 20px rgba(15, 23, 42, 0.15);
-            margin-bottom: 1.2rem;
-            border-left: 6px solid #2563EB;
+            box-shadow: 0 10px 25px rgba(185, 28, 28, 0.2);
+            margin-bottom: 1.4rem;
+            border-left: 8px solid #991B1B;
         }
 
         .exec-badge {
-            background-color: #2563EB;
+            background-color: rgba(255, 255, 255, 0.2);
             color: #FFFFFF;
             font-size: 0.72rem;
             font-weight: 700;
-            padding: 3px 9px;
+            padding: 4px 12px;
             border-radius: 20px;
             letter-spacing: 0.08em;
             text-transform: uppercase;
             display: inline-block;
             margin-bottom: 0.4rem;
+            border: 1px solid rgba(255, 255, 255, 0.35);
         }
 
         .exec-title {
-            font-size: 1.8rem;
-            font-weight: 700;
-            color: #F8FAFC;
+            font-size: 1.95rem;
+            font-weight: 800;
+            color: #FFFFFF;
             margin: 0;
             line-height: 1.2;
+            letter-spacing: -0.02em;
         }
 
         .exec-subtitle {
-            font-size: 0.9rem;
-            color: #94A3B8;
+            font-size: 0.92rem;
+            color: #FECACA;
             margin-top: 0.3rem;
             margin-bottom: 0;
         }
 
+        /* Metric Cards */
         .metric-card {
             background: #FFFFFF;
-            border: 1px solid #E2E8F0;
+            border: 1px solid #E5E7EB;
             border-radius: 10px;
-            padding: 0.9rem 1.1rem;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.02);
+            padding: 1rem 1.2rem;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
         }
-        .metric-card.blue { border-top: 4px solid #2563EB; }
-        .metric-card.green { border-top: 4px solid #10B981; }
-        .metric-card.red { border-top: 4px solid #EF4444; }
+        .metric-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 16px rgba(220, 38, 38, 0.08);
+        }
+        .metric-card.red { border-top: 4px solid #DC2626; }
+        .metric-card.darkred { border-top: 4px solid #991B1B; }
+        .metric-card.green { border-top: 4px solid #16A34A; }
         .metric-card.amber { border-top: 4px solid #F59E0B; }
 
         .metric-label {
-            font-size: 0.72rem;
-            font-weight: 600;
-            color: #64748B;
+            font-size: 0.73rem;
+            font-weight: 700;
+            color: #4B5563;
             text-transform: uppercase;
-            letter-spacing: 0.05em;
+            letter-spacing: 0.06em;
         }
         .metric-val {
-            font-size: 1.6rem;
-            font-weight: 700;
-            color: #0F172A;
+            font-size: 1.7rem;
+            font-weight: 800;
+            color: #111827;
             margin-top: 0.2rem;
         }
         .metric-sub {
-            font-size: 0.72rem;
-            color: #64748B;
-            margin-top: 0.1rem;
+            font-size: 0.73rem;
+            color: #6B7280;
+            margin-top: 0.15rem;
         }
 
         .section-header {
-            font-size: 1.05rem;
-            font-weight: 700;
-            color: #0F172A;
-            margin-top: 0.8rem;
-            margin-bottom: 0.6rem;
+            font-size: 1.1rem;
+            font-weight: 800;
+            color: #991B1B;
+            margin-top: 0.9rem;
+            margin-bottom: 0.7rem;
             display: flex;
             align-items: center;
             gap: 0.5rem;
+            border-bottom: 2px solid #FEE2E2;
+            padding-bottom: 0.3rem;
         }
 
         .stDataFrame {
             border-radius: 8px;
             overflow: hidden;
-            border: 1px solid #E2E8F0;
+            border: 1px solid #E5E7EB;
         }
         </style>
     """, unsafe_allow_html=True)
@@ -804,7 +857,7 @@ def run_streamlit_app():
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             st.markdown(f"""
-                <div class="metric-card blue">
+                <div class="metric-card darkred">
                     <div class="metric-label">Total Issues Logged</div>
                     <div class="metric-val">{total_issues:,}</div>
                     <div class="metric-sub">Active & Closed Tickets</div>
@@ -1012,7 +1065,7 @@ def run_streamlit_app():
         p1, p2, p3, p4, p5 = st.columns(5)
         with p1:
             st.markdown(f"""
-                <div class="metric-card blue">
+                <div class="metric-card darkred">
                     <div class="metric-label">Total Chargers</div>
                     <div class="metric-val">{total_chargers:,}</div>
                     <div class="metric-sub">Active Infrastructure</div>
@@ -1020,7 +1073,7 @@ def run_streamlit_app():
             """, unsafe_allow_html=True)
         with p2:
             st.markdown(f"""
-                <div class="metric-card blue">
+                <div class="metric-card red">
                     <div class="metric-label">Total Stations</div>
                     <div class="metric-val">{total_stations:,}</div>
                     <div class="metric-sub">Station Sites</div>
@@ -1062,7 +1115,7 @@ def run_streamlit_app():
                 labels=['PM Done (Completed)', 'PM Pending (Scheduled)', 'Advance PM Done'],
                 values=[pm_done, pm_pending, advance_done],
                 title="PM Execution Distribution Share",
-                colors=['#10B981', '#EF4444', '#2563EB'],
+                colors=['#16A34A', '#DC2626', '#991B1B'],
                 hole=0.45
             )
 
@@ -1113,7 +1166,7 @@ def run_streamlit_app():
                     x_col='ZME Name',
                     y_cols=['PM Planning', 'PM Done', 'PM Pending'],
                     title="Scheduled vs Completed PM Work Orders by ZME",
-                    colors=['#2563EB', '#10B981', '#EF4444']
+                    colors=['#991B1B', '#16A34A', '#DC2626']
                 )
 
         st.markdown("---")
@@ -1129,7 +1182,7 @@ def run_streamlit_app():
                     x_col='ZME Name',
                     y_cols=['Total Chargers', 'Total Stations'],
                     title="Total Chargers vs Total Stations by ZME",
-                    colors=['#0F172A', '#3B82F6']
+                    colors=['#991B1B', '#DC2626']
                 )
 
             with col_density_t:
