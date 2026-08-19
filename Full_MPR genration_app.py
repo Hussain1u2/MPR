@@ -12,6 +12,8 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 
+HAS_PLOTLY = True
+
 # Styling constants for OpenPyXL excel generation
 FONT = 'Arial'
 HEADER_FILL = PatternFill('solid', fgColor='1F4E78')
