@@ -513,22 +513,28 @@ def generate_workbook_cached(source_bytes_or_path, pm_bytes_or_path=None):
 
 def plot_pie_chart(labels, values, title, colors=None, hole=0.45):
     """Renders a responsive, high-contrast Donut/Pie Chart."""
+    dark_mode = st.session_state.get('dark_mode', False)
+    text_color = '#ffffff' if dark_mode else '#0F172A'
+    legend_color = '#cbd5e1' if dark_mode else '#475569'
+
     if HAS_PLOTLY:
         fig = go.Figure(data=[go.Pie(
             labels=labels,
             values=values,
             hole=hole,
-            marker_colors=colors if colors else ['#10B981', '#DC2626', '#475569', '#F59E0B', '#991B1B'],
+            marker_colors=colors if colors else ['#10b981', '#DC2626', '#475569', '#f59e0b', '#991B1B'],
             textinfo='percent+value',
             hoverinfo='label+percent+value',
-            insidetextfont=dict(color='#FFFFFF', size=13, family='Inter')
+            insidetextfont=dict(color='#ffffff', size=13, family='Outfit')
         )])
         fig.update_layout(
-            title=dict(text=title, font=dict(size=14, color='#0F172A', family='Inter', weight='bold')),
+            title=dict(text=title, font=dict(size=15, color=text_color, family='Outfit', weight='600')),
             margin=dict(l=15, r=15, t=45, b=15),
             height=300,
             showlegend=True,
-            legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5)
+            legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5, font=dict(color=legend_color)),
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)'
         )
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'responsive': True})
     else:
@@ -539,6 +545,11 @@ def plot_pie_chart(labels, values, title, colors=None, hole=0.45):
 
 def plot_vertical_bar(df, x_col, y_col, title, color_hex="#DC2626"):
     """Renders a clean vertical bar chart with exact value labels."""
+    dark_mode = st.session_state.get('dark_mode', False)
+    text_color = '#f8fafc' if dark_mode else '#0F172A'
+    grid_color = 'rgba(255,255,255,0.05)' if dark_mode else '#F1F5F9'
+    label_color = '#cbd5e1' if dark_mode else '#475569'
+
     if HAS_PLOTLY:
         fig = px.bar(
             df,
@@ -548,15 +559,16 @@ def plot_vertical_bar(df, x_col, y_col, title, color_hex="#DC2626"):
             text=y_col,
             color_discrete_sequence=[color_hex]
         )
-        fig.update_traces(texttemplate='%{text}', textposition='outside', textfont=dict(size=12, family='Inter'))
+        fig.update_traces(texttemplate='%{text}', textposition='outside', textfont=dict(size=12, family='Outfit', color=label_color))
         fig.update_layout(
             margin=dict(l=15, r=15, t=45, b=15),
             height=320,
-            font=dict(family='Inter', color='#0F172A'),
+            font=dict(family='Outfit', color=text_color),
             xaxis_title=x_col,
             yaxis_title=y_col,
+            paper_bgcolor='rgba(0,0,0,0)',
             plot_bgcolor='rgba(0,0,0,0)',
-            yaxis=dict(showgrid=True, gridcolor='#F1F5F9')
+            yaxis=dict(showgrid=True, gridcolor=grid_color)
         )
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'responsive': True})
     else:
@@ -566,9 +578,14 @@ def plot_vertical_bar(df, x_col, y_col, title, color_hex="#DC2626"):
 
 def plot_grouped_bar(df, x_col, y_cols, title, colors=None):
     """Renders a responsive multi-series grouped column chart."""
+    dark_mode = st.session_state.get('dark_mode', False)
+    text_color = '#f8fafc' if dark_mode else '#0F172A'
+    grid_color = 'rgba(255,255,255,0.05)' if dark_mode else '#F1F5F9'
+    legend_color = '#cbd5e1' if dark_mode else '#475569'
+
     if HAS_PLOTLY:
         fig = go.Figure()
-        palette = colors if colors else ['#DC2626', '#991B1B', '#475569', '#10B981']
+        palette = colors if colors else ['#DC2626', '#991B1B', '#475569', '#10b981']
         for idx, col in enumerate(y_cols):
             fig.add_trace(go.Bar(
                 name=col,
@@ -577,16 +594,17 @@ def plot_grouped_bar(df, x_col, y_cols, title, colors=None):
                 marker_color=palette[idx % len(palette)],
                 text=df[col],
                 textposition='auto',
-                textfont=dict(size=11, family='Inter')
+                textfont=dict(size=11, family='Outfit', color='#ffffff')
             ))
         fig.update_layout(
             barmode='group',
-            title=dict(text=title, font=dict(size=14, color='#0F172A', family='Inter', weight='bold')),
+            title=dict(text=title, font=dict(size=15, color=text_color, family='Outfit', weight='600')),
             margin=dict(l=15, r=15, t=45, b=15),
             height=320,
-            legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
+            legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5, font=dict(color=legend_color)),
+            paper_bgcolor='rgba(0,0,0,0)',
             plot_bgcolor='rgba(0,0,0,0)',
-            yaxis=dict(showgrid=True, gridcolor='#F1F5F9')
+            yaxis=dict(showgrid=True, gridcolor=grid_color)
         )
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'responsive': True})
     else:
@@ -602,166 +620,199 @@ def run_streamlit_app():
         initial_sidebar_state="expanded"
     )
 
-    # Professional Executive Styling - Red, White & Slate Grey Theme
-    st.markdown("""
+    st.sidebar.markdown("### ⚙️ Theme Settings")
+    dark_mode = st.sidebar.toggle("🌙 Dark Mode", value=st.session_state.get('dark_mode', False))
+    st.session_state['dark_mode'] = dark_mode
+    st.sidebar.markdown("---")
+
+    if dark_mode:
+        bg_main = "#0f172a"
+        bg_sidebar = "#020617"
+        text_color = "#f8fafc"
+        text_sub = "#94a3b8"
+        card_bg = "rgba(30, 41, 59, 0.5)"
+        card_hover = "rgba(30, 41, 59, 0.8)"
+        border_color = "rgba(255, 255, 255, 0.05)"
+    else:
+        bg_main = "#FFFFFF"
+        bg_sidebar = "#F8FAFC"
+        text_color = "#0F172A"
+        text_sub = "#64748B"
+        card_bg = "#FFFFFF"
+        card_hover = "#FFFFFF"
+        border_color = "#E2E8F0"
+
+    # Red & White theme CSS (with dynamic dark/light)
+    css = f"""
         <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&display=swap');
         
-        /* Force White Background on Main Container & Header */
-        .stApp, [data-testid="stMain"], [data-testid="stHeader"] {
-            background-color: #FFFFFF !important;
-        }
+        .stApp, [data-testid="stMain"], [data-testid="stHeader"] {{
+            background-color: {bg_main} !important;
+        }}
 
-        [data-testid="stSidebar"] {
-            background-color: #F8FAFC !important;
-            border-right: 1px solid #E2E8F0 !important;
-        }
+        [data-testid="stSidebar"] {{
+            background-color: {bg_sidebar} !important;
+            border-right: 1px solid {border_color} !important;
+        }}
 
-        /* Executive Typography for High-Readability Presentations */
-        html, body, [class*="css"], p, span, label, div {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-            color: #0F172A;
-        }
+        html, body, [class*="css"], p, span, label, div {{
+            font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+            color: {text_color};
+        }}
 
-        /* Executive Red Buttons with Glow */
-        .stButton > button, div[data-testid="stDownloadButton"] > button {
+        /* Red Gradient Buttons */
+        .stButton > button, div[data-testid="stDownloadButton"] > button {{
             background: linear-gradient(135deg, #991B1B 0%, #DC2626 100%) !important;
-            color: #FFFFFF !important;
-            border-radius: 8px !important;
-            font-weight: 800 !important;
-            font-size: 0.95rem !important;
+            color: #ffffff !important;
+            border-radius: 10px !important;
+            font-weight: 600 !important;
+            font-size: 1rem !important;
             border: none !important;
             padding: 0.65rem 1.4rem !important;
-            box-shadow: 0 4px 14px rgba(185, 28, 28, 0.28) !important;
-            transition: all 0.2s ease !important;
+            box-shadow: 0 4px 15px rgba(220, 38, 38, 0.3) !important;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
             letter-spacing: 0.02em !important;
-        }
-        .stButton > button:hover, div[data-testid="stDownloadButton"] > button:hover {
-            background: linear-gradient(135deg, #7F1D1D 0%, #B91C1C 100%) !important;
-            box-shadow: 0 6px 20px rgba(153, 27, 27, 0.42) !important;
-            transform: translateY(-1px) !important;
-        }
+        }}
+        .stButton > button:hover, div[data-testid="stDownloadButton"] > button:hover {{
+            box-shadow: 0 6px 20px rgba(220, 38, 38, 0.5) !important;
+            transform: translateY(-2px) !important;
+        }}
 
-        /* Streamlit Tabs Red Accent */
-        button[data-baseweb="tab"] {
-            font-weight: 800 !important;
-            color: #475569 !important;
-            font-size: 1rem !important;
+        /* Streamlit Tabs */
+        button[data-baseweb="tab"] {{
+            font-weight: 600 !important;
+            color: {text_sub} !important;
+            font-size: 1.05rem !important;
             padding: 0.75rem 1.25rem !important;
-        }
-        button[data-baseweb="tab"][aria-selected="true"] {
-            color: #991B1B !important;
+            transition: color 0.3s ease !important;
+        }}
+        button[data-baseweb="tab"][aria-selected="true"] {{
+            color: #DC2626 !important;
             border-bottom-color: #DC2626 !important;
-        }
-        div[data-baseweb="tab-highlight"] {
+        }}
+        div[data-baseweb="tab-highlight"] {{
             background-color: #DC2626 !important;
             height: 3px !important;
-        }
+            border-radius: 3px 3px 0 0 !important;
+        }}
 
-        /* Executive Red Header Box */
-        .exec-header-box {
+        /* Header Box - Always Red Gradient for brand */
+        .exec-header-box {{
             background: linear-gradient(135deg, #7F1D1D 0%, #B91C1C 45%, #991B1B 100%);
-            padding: 1.5rem 2.2rem;
-            border-radius: 14px;
-            color: #FFFFFF;
-            box-shadow: 0 12px 30px rgba(185, 28, 28, 0.22);
-            margin-bottom: 1.5rem;
-            border-left: 8px solid #DC2626;
-        }
+            padding: 1.8rem 2.5rem;
+            border-radius: 16px;
+            color: #ffffff;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+            margin-bottom: 2rem;
+            border-left: 6px solid #DC2626;
+            position: relative;
+            overflow: hidden;
+        }}
 
-        .exec-badge {
+        .exec-badge {{
             background-color: rgba(255, 255, 255, 0.18);
-            color: #FFFFFF;
-            font-size: 0.73rem;
-            font-weight: 800;
-            padding: 5px 14px;
+            color: #ffffff;
+            font-size: 0.75rem;
+            font-weight: 700;
+            padding: 6px 16px;
             border-radius: 20px;
-            letter-spacing: 0.09em;
+            letter-spacing: 0.1em;
             text-transform: uppercase;
             display: inline-block;
-            margin-bottom: 0.5rem;
-            border: 1px solid rgba(255, 255, 255, 0.35);
-            backdrop-filter: blur(4px);
-        }
+            margin-bottom: 0.8rem;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }}
 
-        .exec-title {
-            font-size: 2.1rem;
-            font-weight: 900;
-            color: #FFFFFF;
+        .exec-title {{
+            font-size: 2.2rem;
+            font-weight: 800;
+            color: #ffffff;
             margin: 0;
             line-height: 1.2;
-            letter-spacing: -0.025em;
-        }
+            letter-spacing: -0.02em;
+        }}
 
-        .exec-subtitle {
-            font-size: 0.95rem;
+        .exec-subtitle {{
+            font-size: 1rem;
             color: #FEE2E2;
-            margin-top: 0.35rem;
+            margin-top: 0.5rem;
             margin-bottom: 0;
-            font-weight: 500;
-        }
+            font-weight: 400;
+        }}
 
         /* Metric Cards */
-        .metric-card {
-            background: #FFFFFF;
-            border: 1px solid #E2E8F0;
-            border-radius: 12px;
-            padding: 1.1rem 1.3rem;
-            box-shadow: 0 4px 16px rgba(15, 23, 42, 0.04);
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
-        }
-        .metric-card:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 8px 24px rgba(220, 38, 38, 0.12);
-        }
-        .metric-card.red { border-top: 5px solid #DC2626; }
-        .metric-card.darkred { border-top: 5px solid #991B1B; }
-        .metric-card.grey { border-top: 5px solid #475569; }
-        .metric-card.green { border-top: 5px solid #10B981; }
-        .metric-card.amber { border-top: 5px solid #F59E0B; }
+        .metric-card {{
+            background: {card_bg};
+            border: 1px solid {border_color};
+            border-radius: 16px;
+            padding: 1.5rem;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }}
+        .metric-card::after {{
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 4px;
+        }}
+        .metric-card:hover {{
+            transform: translateY(-4px);
+            box-shadow: 0 12px 30px rgba(220, 38, 38, 0.15);
+            background: {card_hover};
+            border-color: rgba(220, 38, 38, 0.3);
+        }}
+        .metric-card.red::after {{ background: linear-gradient(90deg, #f43f5e, #e11d48); }}
+        .metric-card.darkred::after {{ background: linear-gradient(90deg, #991B1B, #7F1D1D); }} 
+        .metric-card.grey::after {{ background: linear-gradient(90deg, #64748b, #475569); }}
+        .metric-card.green::after {{ background: linear-gradient(90deg, #10b981, #059669); }}
+        .metric-card.amber::after {{ background: linear-gradient(90deg, #f59e0b, #d97706); }}
 
-        .metric-label {
-            font-size: 0.74rem;
-            font-weight: 800;
-            color: #475569;
+        .metric-label {{
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: {text_sub};
             text-transform: uppercase;
-            letter-spacing: 0.07em;
-        }
-        .metric-val {
-            font-size: 1.85rem;
-            font-weight: 900;
-            color: #0F172A;
-            margin-top: 0.25rem;
+            letter-spacing: 0.05em;
+        }}
+        .metric-val {{
+            font-size: 2.2rem;
+            font-weight: 700;
+            color: {text_color};
+            margin-top: 0.5rem;
             letter-spacing: -0.02em;
-        }
-        .metric-sub {
-            font-size: 0.74rem;
-            color: #64748B;
-            margin-top: 0.18rem;
-            font-weight: 500;
-        }
+        }}
+        .metric-sub {{
+            font-size: 0.8rem;
+            color: {text_sub};
+            margin-top: 0.2rem;
+            font-weight: 400;
+        }}
 
-        .section-header {
-            font-size: 1.15rem;
-            font-weight: 800;
-            color: #991B1B;
-            margin-top: 1rem;
-            margin-bottom: 0.8rem;
+        .section-header {{
+            font-size: 1.3rem;
+            font-weight: 600;
+            color: #DC2626;
+            margin-top: 1.5rem;
+            margin-bottom: 1rem;
             display: flex;
             align-items: center;
             gap: 0.5rem;
-            border-bottom: 2px solid #FEE2E2;
-            padding-bottom: 0.4rem;
+            border-bottom: 1px solid {border_color};
+            padding-bottom: 0.6rem;
             letter-spacing: -0.01em;
-        }
+        }}
 
-        .stDataFrame {
-            border-radius: 10px;
+        .stDataFrame {{
+            border-radius: 12px;
             overflow: hidden;
-            border: 1px solid #E2E8F0;
-        }
+            border: 1px solid {border_color};
+        }}
         </style>
-    """, unsafe_allow_html=True)
+    """
+    st.markdown(css, unsafe_allow_html=True)
 
     # Executive Meeting Presentation Header
     st.markdown("""
@@ -772,9 +823,9 @@ def run_streamlit_app():
                     <h1 class="exec-title">Monthly Progress Report (MPR) & PM Governance</h1>
                     <p class="exec-subtitle">C-Suite Operations Deck: SLA Performance, Preventive Maintenance (PM F-01) & Infrastructure Analytics.</p>
                 </div>
-                <div style="text-align: right; background: rgba(255, 255, 255, 0.15); padding: 8px 18px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.3);">
-                    <div style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.09em; color: #FEE2E2; font-weight: 700;">Executive Deck</div>
-                    <div style="font-size: 1.05rem; font-weight: 900; color: #FFFFFF;">FY 2026-27 Review</div>
+                <div style="text-align: right; background: rgba(255, 255, 255, 0.1); padding: 10px 20px; border-radius: 12px; border: 1px solid rgba(255, 255, 255, 0.15); backdrop-filter: blur(8px);">
+                    <div style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: #94a3b8; font-weight: 600;">Executive Deck</div>
+                    <div style="font-size: 1.15rem; font-weight: 800; color: #ffffff;">FY 2026-27 Review</div>
                 </div>
             </div>
         </div>
@@ -1033,7 +1084,7 @@ def run_streamlit_app():
             zme_df = zme_df.rename(columns={'ZME': 'ZME Name'}).sort_values(by='Total_Issues', ascending=False)
 
             with col_zme_c:
-                plot_vertical_bar(zme_df, x_col='ZME Name', y_col='Total_Issues', title="Total Issues Logged by ZME", color_hex="#2563EB")
+                plot_vertical_bar(zme_df, x_col='ZME Name', y_col='Total_Issues', title="Total Issues Logged by ZME", color_hex="#DC2626")
 
             with col_zme_t:
                 st.write("##### 📊 ZME SLA Data Table")
@@ -1059,7 +1110,7 @@ def run_streamlit_app():
                 labels=['Within TAT (Compliant)', 'Without TAT (Breached)'],
                 values=[within_tat, without_tat],
                 title="Overall SLA Compliance Share",
-                colors=['#10B981', '#EF4444'],
+                colors=['#10b981', '#DC2626'],
                 hole=0.45
             )
 
@@ -1080,7 +1131,7 @@ def run_streamlit_app():
                     x_col='Zone',
                     y_cols=['Within_TAT', 'Without_TAT'],
                     title="Work Orders Within vs Without TAT by Zone",
-                    colors=['#10B981', '#EF4444']
+                    colors=['#10b981', '#DC2626']
                 )
 
                 st.dataframe(
@@ -1102,7 +1153,7 @@ def run_streamlit_app():
             if 'Status' in filtered_issue_df.columns:
                 status_counts = filtered_issue_df['Status'].value_counts().reset_index()
                 status_counts.columns = ['Status', 'Count']
-                plot_vertical_bar(status_counts, x_col='Status', y_col='Count', title="Status Pipeline", color_hex="#8B5CF6")
+                plot_vertical_bar(status_counts, x_col='Status', y_col='Count', title="Status Pipeline", color_hex="#475569")
                 st.dataframe(status_counts, use_container_width=True)
 
         with c_sev:
@@ -1114,7 +1165,7 @@ def run_streamlit_app():
                     labels=sev_counts['Severity'].tolist(),
                     values=sev_counts['Count'].tolist(),
                     title="Severity Share",
-                    colors=['#EF4444', '#F59E0B', '#3B82F6', '#10B981'],
+                    colors=['#DC2626', '#f59e0b', '#475569', '#10b981'],
                     hole=0.4
                 )
                 st.dataframe(sev_counts, use_container_width=True)
@@ -1128,7 +1179,7 @@ def run_streamlit_app():
                     labels=cust_counts['Segment'].tolist(),
                     values=cust_counts['Count'].tolist(),
                     title="Segment Share",
-                    colors=['#2563EB', '#10B981'],
+                    colors=['#475569', '#10b981'],
                     hole=0.4
                 )
                 st.dataframe(cust_counts, use_container_width=True)
@@ -1151,7 +1202,7 @@ def run_streamlit_app():
                 col_rep_chart, col_rep_tbl = st.columns([6, 6])
                 with col_rep_chart:
                     repeats['Station_Fault'] = repeats['Station ID'].astype(str) + " - " + repeats['Issue Sub-Type'].astype(str)
-                    plot_vertical_bar(repeats.head(10), x_col='Station_Fault', y_col='Occurrences', title="Top Repetitive Fault Patterns", color_hex="#DC2626")
+                    plot_vertical_bar(repeats.head(10), x_col='Station_Fault', y_col='Occurrences', title="Top Repetitive Fault Patterns", color_hex="#991B1B")
                 with col_rep_tbl:
                     st.write("##### Repetitive Station Faults Table")
                     st.dataframe(
@@ -1244,7 +1295,7 @@ def run_streamlit_app():
                 labels=['PM Done (Completed)', 'PM Pending (Scheduled)', 'Advance PM Done'],
                 values=[pm_done, pm_pending, advance_done],
                 title="PM Execution Distribution Share",
-                colors=['#16A34A', '#DC2626', '#991B1B'],
+                colors=['#10b981', '#DC2626', '#991B1B'],
                 hole=0.45
             )
 
@@ -1295,7 +1346,7 @@ def run_streamlit_app():
                     x_col='ZME Name',
                     y_cols=['PM Planning', 'PM Done', 'PM Pending'],
                     title="Scheduled vs Completed PM Work Orders by ZME",
-                    colors=['#991B1B', '#16A34A', '#DC2626']
+                    colors=['#991B1B', '#10b981', '#DC2626']
                 )
 
         st.markdown("---")
