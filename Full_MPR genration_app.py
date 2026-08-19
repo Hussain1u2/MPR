@@ -9,6 +9,9 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 import streamlit as st
+import plotly.express as px
+import plotly.graph_objects as go
+
 
 # Styling constants for OpenPyXL excel generation
 FONT = 'Arial'
@@ -33,6 +36,14 @@ PM_QUARTER_BLOCKS = {
 PM_STATION_COLS = list(range(0, 13))
 
 
+def get_val(row_tuple, idx, default=None):
+    """Safely fetch item from tuple/list without IndexError."""
+    if row_tuple is not None and 0 <= idx < len(row_tuple):
+        val = row_tuple[idx]
+        return val if val is not None else default
+    return default
+
+
 def load_issue_tracker(source):
     if isinstance(source, pd.DataFrame):
         df = source
@@ -42,8 +53,10 @@ def load_issue_tracker(source):
         wb = openpyxl.load_workbook(source, data_only=True) if not hasattr(source, 'sheetnames') else source
         sheet_name = 'Issue Tracker' if 'Issue Tracker' in wb.sheetnames else wb.sheetnames[0]
         rows = list(wb[sheet_name].iter_rows(values_only=True))
-        headers = [h.strip() if isinstance(h, str) else h for h in rows[0]]
-        df = pd.DataFrame(rows[1:], columns=headers).dropna(how='all')
+        if not rows:
+            return pd.DataFrame()
+        headers = [h.strip() if isinstance(h, str) else h for h in rows[0] if h is not None]
+        df = pd.DataFrame([r[:len(headers)] for r in rows[1:]], columns=headers).dropna(how='all')
 
     if 'Issue Date' in df.columns:
         df['Issue Date Parsed'] = pd.to_datetime(df['Issue Date'], errors='coerce')
@@ -55,40 +68,46 @@ def load_pm_tracker(source):
         df = source
     elif hasattr(source, 'name') and source.name.lower().endswith('.csv'):
         df = pd.read_csv(source)
-        # Standardize CSV column names if flat format
-        if 'Due Date' in df.columns:
-            df['Due Date Parsed'] = pd.to_datetime(df['Due Date'], errors='coerce')
-        if 'Actual Completion Date' in df.columns:
-            df['Actual Completion Date Parsed'] = pd.to_datetime(df['Actual Completion Date'], errors='coerce')
-        return df
     else:
         wb = openpyxl.load_workbook(source, data_only=True) if not hasattr(source, 'sheetnames') else source
         sheet_name = 'PM Tracker' if 'PM Tracker' in wb.sheetnames else wb.sheetnames[0]
         rows = list(wb[sheet_name].iter_rows(values_only=True))
-        row_date, row_headers = rows[3], rows[4]
-        station_fields = [row_headers[i] for i in PM_STATION_COLS]
+        if not rows:
+            return pd.DataFrame()
 
-        records = []
-        for r in rows[5:]:
-            if r[0] is None and r[10] is None:
-                continue
-            station = {name: r[i] for name, i in zip(station_fields, PM_STATION_COLS)}
-            for quarter, blk in PM_QUARTER_BLOCKS.items():
-                compliance = r[blk['qcol']]
-                col = blk['start']
-                for _ in range(3):
-                    records.append({
-                        **station,
-                        'Quarter': quarter,
-                        'Due Date': row_date[col],
-                        'PM Status': r[col],
-                        'F.E. Inspection': r[col + 1],
-                        'HSE Inspection': r[col + 2],
-                        'Actual Completion Date': r[col + 3],
-                        'Quarterly Compliance': compliance,
-                    })
-                    col += 4
-        df = pd.DataFrame(records).rename(columns={'Route ': 'Route'})
+        # Check if rows[0] is a standard header row (e.g. flat single-sheet upload)
+        first_row_str = [str(h).strip().lower() for h in rows[0] if h is not None]
+        is_flat_table = any(k in first_row_str for k in ['zme', 'station id', 'charger id', 'pm status', 'due date']) or len(rows) <= 5
+
+        if is_flat_table:
+            headers = [h.strip() if isinstance(h, str) else h for h in rows[0] if h is not None]
+            df = pd.DataFrame([r[:len(headers)] for r in rows[1:]], columns=headers).dropna(how='all')
+        else:
+            row_date = rows[3] if len(rows) > 3 else ()
+            row_headers = rows[4] if len(rows) > 4 else ()
+            station_fields = [get_val(row_headers, i, f"Col_{i}") for i in PM_STATION_COLS]
+
+            records = []
+            for r in rows[5:]:
+                if get_val(r, 0) is None and get_val(r, 10) is None:
+                    continue
+                station = {name: get_val(r, i) for name, i in zip(station_fields, PM_STATION_COLS)}
+                for quarter, blk in PM_QUARTER_BLOCKS.items():
+                    compliance = get_val(r, blk['qcol'])
+                    col = blk['start']
+                    for _ in range(3):
+                        records.append({
+                            **station,
+                            'Quarter': quarter,
+                            'Due Date': get_val(row_date, col),
+                            'PM Status': get_val(r, col),
+                            'F.E. Inspection': get_val(r, col + 1),
+                            'HSE Inspection': get_val(r, col + 2),
+                            'Actual Completion Date': get_val(r, col + 3),
+                            'Quarterly Compliance': compliance,
+                        })
+                        col += 4
+            df = pd.DataFrame(records).rename(columns={'Route ': 'Route'})
 
     if 'Due Date' in df.columns:
         df['Due Date Parsed'] = pd.to_datetime(df['Due Date'], errors='coerce')
@@ -99,7 +118,6 @@ def load_pm_tracker(source):
 
 def write_data_sheet(wb, name, df, table_name, date_cols):
     ws = wb.create_sheet(name)
-    # Drop helper parsed columns before writing to openpyxl
     clean_df = df.drop(columns=[c for c in ['Issue Date Parsed', 'Due Date Parsed', 'Actual Completion Date Parsed'] if c in df.columns])
     for c, col in enumerate(clean_df.columns, start=1):
         cell = ws.cell(row=1, column=c, value=col)
@@ -331,6 +349,87 @@ def generate_workbook(source_input_or_issue, pm_input=None):
     return wb, issue_df, pm_df
 
 
+def plot_pie_chart(labels, values, title, colors=None, hole=0.4):
+    """Renders a sleek Donut/Pie Chart with Plotly (or Streamlit fallback)."""
+    if HAS_PLOTLY:
+        fig = go.Figure(data=[go.Pie(
+            labels=labels,
+            values=values,
+            hole=hole,
+            marker_colors=colors if colors else ['#10B981', '#EF4444', '#F59E0B', '#2563EB', '#8B5CF6'],
+            textinfo='label+percent+value',
+            insidetextorientation='radial'
+        )])
+        fig.update_layout(
+            title=dict(text=title, font=dict(size=14, color='#0F172A', family='Inter')),
+            margin=dict(l=10, r=10, t=40, b=10),
+            height=320,
+            showlegend=True,
+            legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        df_pie = pd.DataFrame({'Category': labels, 'Value': values})
+        st.write(f"**{title}**")
+        st.dataframe(df_pie, use_container_width=True)
+
+
+def plot_vertical_bar(df, x_col, y_col, title, color_hex="#2563EB"):
+    """Renders a vertical column bar chart."""
+    if HAS_PLOTLY:
+        fig = px.bar(
+            df,
+            x=x_col,
+            y=y_col,
+            title=title,
+            text=y_col,
+            color_discrete_sequence=[color_hex]
+        )
+        fig.update_traces(texttemplate='%{text}', textposition='outside')
+        fig.update_layout(
+            margin=dict(l=10, r=10, t=40, b=10),
+            height=340,
+            font=dict(family='Inter', color='#0F172A'),
+            xaxis_title=x_col,
+            yaxis_title=y_col,
+            plot_bgcolor='rgba(0,0,0,0)',
+            yaxis=dict(showgrid=True, gridcolor='#E2E8F0')
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.write(f"**{title}**")
+        st.bar_chart(df.set_index(x_col)[y_col], height=300)
+
+
+def plot_grouped_bar(df, x_col, y_cols, title, colors=None):
+    """Renders a multi-series grouped column chart."""
+    if HAS_PLOTLY:
+        fig = go.Figure()
+        palette = colors if colors else ['#10B981', '#EF4444', '#2563EB', '#F59E0B']
+        for idx, col in enumerate(y_cols):
+            fig.add_trace(go.Bar(
+                name=col,
+                x=df[x_col],
+                y=df[col],
+                marker_color=palette[idx % len(palette)],
+                text=df[col],
+                textposition='auto'
+            ))
+        fig.update_layout(
+            barmode='group',
+            title=dict(text=title, font=dict(size=14, color='#0F172A', family='Inter')),
+            margin=dict(l=10, r=10, t=40, b=10),
+            height=340,
+            legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
+            plot_bgcolor='rgba(0,0,0,0)',
+            yaxis=dict(showgrid=True, gridcolor='#E2E8F0')
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.write(f"**{title}**")
+        st.dataframe(df.set_index(x_col)[y_cols], use_container_width=True)
+
+
 def run_streamlit_app():
     st.set_page_config(
         page_title="ChargeZone | Monthly Progress Report (MPR) Executive Dashboard",
@@ -457,7 +556,7 @@ def run_streamlit_app():
     upload_mode = st.sidebar.radio(
         "Select Upload Method:",
         ["📁 Single Merged File (1 Workbook)", "📂 Two Separate Files (Issue & PM)"],
-        index=1  # Default to 2 Separate Files or Single Merged
+        index=1
     )
 
     issue_input = None
@@ -582,16 +681,16 @@ def run_streamlit_app():
 
     # Main Tabs
     tab_issues, tab_pm, tab_raw = st.tabs([
-        "📉 Issue MPR Dashboard",
-        "🛠️ PM F-01 Dashboard",
-        "📋 Master Data Explorer"
+        "📉 Issue MPR Presentation Charts & Details",
+        "🛠️ PM F-01 Presentation Charts & Details",
+        "📋 Master Data Governance Explorer"
     ])
 
     # ---------------------------------------------------------
-    # TAB 1: ISSUE MPR DASHBOARD
+    # TAB 1: ISSUE MPR DASHBOARD & PRESENTATION CHARTS
     # ---------------------------------------------------------
     with tab_issues:
-        st.markdown('<div class="section-header">📊 Operational Issue & SLA Performance Analytics</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-header">📊 Operational Issue & SLA Analytics Executive Presentation</div>', unsafe_allow_html=True)
 
         total_issues = len(filtered_issue_df)
         within_tat = len(filtered_issue_df[filtered_issue_df['TAT Compliance'].astype(str).str.upper() == 'YES']) if 'TAT Compliance' in filtered_issue_df.columns else 0
@@ -635,11 +734,21 @@ def run_streamlit_app():
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        col_zme, col_zone = st.columns([6, 6])
+        # Presentation Charts Row 1: Donut Chart (SLA Ratio) & ZME Vertical Bar Chart
+        col_pie_sla, col_bar_zme = st.columns([5, 7])
 
-        # 1. ZME Name Summary
-        with col_zme:
-            st.markdown('<div class="section-header">1. Issue Summary by ZME Name</div>', unsafe_allow_html=True)
+        with col_pie_sla:
+            st.markdown('<div class="section-header">🍩 1. Overall SLA Compliance Ratio (Pie Chart)</div>', unsafe_allow_html=True)
+            plot_pie_chart(
+                labels=['Within TAT (Compliant)', 'Without TAT (Breached)'],
+                values=[within_tat, without_tat],
+                title="SLA Compliance Distribution",
+                colors=['#10B981', '#EF4444'],
+                hole=0.45
+            )
+
+        with col_bar_zme:
+            st.markdown('<div class="section-header">📊 2. ZME Performance & TAT Efficiency (Vertical Chart)</div>', unsafe_allow_html=True)
             if 'ZME' in filtered_issue_df.columns and 'TAT Compliance' in filtered_issue_df.columns:
                 zme_df = filtered_issue_df.groupby('ZME').agg(
                     Total_Issues=('Status', 'count'),
@@ -649,20 +758,26 @@ def run_streamlit_app():
                 zme_df['TAT Efficiency %'] = (zme_df['Within_TAT'] / zme_df['Total_Issues'] * 100).round(1)
                 zme_df = zme_df.rename(columns={'ZME': 'ZME Name'}).sort_values(by='Total_Issues', ascending=False)
                 
-                st.dataframe(
-                    zme_df.style.format({
-                        'Total_Issues': '{:,}',
-                        'Within_TAT': '{:,}',
-                        'Without_TAT': '{:,}',
-                        'TAT Efficiency %': '{:.1f}%'
-                    }).background_gradient(subset=['TAT Efficiency %'], cmap='Blues'),
-                    use_container_width=True,
-                    height=300
-                )
+                plot_vertical_bar(zme_df, x_col='ZME Name', y_col='Total_Issues', title="Total Issues Logged per ZME", color_hex="#2563EB")
 
-        # 2. Zone Summary & CM Efficiency
-        with col_zone:
-            st.markdown('<div class="section-header">2. Issue Summary by Zone (CM Efficiency)</div>', unsafe_allow_html=True)
+                with st.expander("📄 View ZME Summary Data Table"):
+                    st.dataframe(
+                        zme_df.style.format({
+                            'Total_Issues': '{:,}',
+                            'Within_TAT': '{:,}',
+                            'Without_TAT': '{:,}',
+                            'TAT Efficiency %': '{:.1f}%'
+                        }).background_gradient(subset=['TAT Efficiency %'], cmap='Blues'),
+                        use_container_width=True
+                    )
+
+        st.markdown("---")
+
+        # Presentation Charts Row 2: Zone Grouped Bar Chart & Ticket Status Bar Chart
+        col_zone_chart, col_status_chart = st.columns([6, 6])
+
+        with col_zone_chart:
+            st.markdown('<div class="section-header">🏢 3. Zone CM Efficiency (Grouped Column Chart)</div>', unsafe_allow_html=True)
             if 'Zone' in filtered_issue_df.columns and 'TAT Compliance' in filtered_issue_df.columns:
                 zone_df = filtered_issue_df.groupby('Zone').agg(
                     Total_Issues=('Status', 'count'),
@@ -671,23 +786,69 @@ def run_streamlit_app():
                 ).reset_index()
                 zone_df['CM Efficiency (Within TAT) %'] = (zone_df['Within_TAT'] / zone_df['Total_Issues'] * 100).round(1)
                 zone_df['CM Efficiency (Without TAT) %'] = (zone_df['Without_TAT'] / zone_df['Total_Issues'] * 100).round(1)
-                zone_df = zone_df[['Zone', 'Total_Issues', 'CM Efficiency (Within TAT) %', 'CM Efficiency (Without TAT) %']].sort_values(by='Total_Issues', ascending=False)
+                zone_df = zone_df.sort_values(by='Total_Issues', ascending=False)
 
-                st.dataframe(
-                    zone_df.style.format({
-                        'Total_Issues': '{:,}',
-                        'CM Efficiency (Within TAT) %': '{:.1f}%',
-                        'CM Efficiency (Without TAT) %': '{:.1f}%'
-                    }).background_gradient(subset=['CM Efficiency (Within TAT) %'], cmap='Greens'),
-                    use_container_width=True,
-                    height=300
+                plot_grouped_bar(
+                    df=zone_df,
+                    x_col='Zone',
+                    y_cols=['Within_TAT', 'Without_TAT'],
+                    title="Incidents Resolved Within vs Without TAT by Zone",
+                    colors=['#10B981', '#EF4444']
+                )
+
+                with st.expander("📄 View Zone Summary Data Table"):
+                    st.dataframe(
+                        zone_df[['Zone', 'Total_Issues', 'CM Efficiency (Within TAT) %', 'CM Efficiency (Without TAT) %']].style.format({
+                            'Total_Issues': '{:,}',
+                            'CM Efficiency (Within TAT) %': '{:.1f}%',
+                            'CM Efficiency (Without TAT) %': '{:.1f}%'
+                        }).background_gradient(subset=['CM Efficiency (Within TAT) %'], cmap='Greens'),
+                        use_container_width=True
+                    )
+
+        with col_status_chart:
+            st.markdown('<div class="section-header">📌 4. Incident Status Pipeline (Vertical Bar Chart)</div>', unsafe_allow_html=True)
+            if 'Status' in filtered_issue_df.columns:
+                status_counts = filtered_issue_df['Status'].value_counts().reset_index()
+                status_counts.columns = ['Status', 'Count']
+                plot_vertical_bar(status_counts, x_col='Status', y_col='Count', title="Work Order Status Pipeline", color_hex="#8B5CF6")
+
+        st.markdown("---")
+
+        # Presentation Charts Row 3: Severity Donut Chart & Customer Segment Pie Chart
+        col_sev_chart, col_cust_chart = st.columns([6, 6])
+
+        with col_sev_chart:
+            st.markdown('<div class="section-header">🚨 5. Severity Risk Profile (Pie Chart)</div>', unsafe_allow_html=True)
+            if 'Severity' in filtered_issue_df.columns:
+                sev_counts = filtered_issue_df['Severity'].value_counts().reset_index()
+                sev_counts.columns = ['Severity', 'Count']
+                plot_pie_chart(
+                    labels=sev_counts['Severity'].tolist(),
+                    values=sev_counts['Count'].tolist(),
+                    title="Incident Breakdown by Severity",
+                    colors=['#EF4444', '#F59E0B', '#3B82F6', '#10B981'],
+                    hole=0.4
+                )
+
+        with col_cust_chart:
+            st.markdown('<div class="section-header">👥 6. Customer Segment Distribution (B2B vs B2C Pie Chart)</div>', unsafe_allow_html=True)
+            if 'B2B/ B2C' in filtered_issue_df.columns:
+                cust_counts = filtered_issue_df['B2B/ B2C'].value_counts().reset_index()
+                cust_counts.columns = ['Segment', 'Count']
+                plot_pie_chart(
+                    labels=cust_counts['Segment'].tolist(),
+                    values=cust_counts['Count'].tolist(),
+                    title="Business Portfolio Breakdown (B2B / B2C)",
+                    colors=['#2563EB', '#10B981'],
+                    hole=0.4
                 )
 
         st.markdown("---")
 
-        # 3. Repetitive Faults
-        st.markdown('<div class="section-header">3. Repetitive Faults (Top Issue Type & Sub-Type)</div>', unsafe_allow_html=True)
-        st.caption("Stations with multiple occurrences (≥ 2) for identical Issue Sub-Types.")
+        # Repetitive Faults
+        st.markdown('<div class="section-header">⚠️ 7. Repetitive Faults (Top Issue Type & Sub-Type)</div>', unsafe_allow_html=True)
+        st.caption("Stations experiencing multiple occurrences (≥ 2) of identical Issue Sub-Types.")
 
         if 'Station ID' in filtered_issue_df.columns and 'Issue Sub-Type' in filtered_issue_df.columns:
             group_cols = ['Station ID']
@@ -699,49 +860,24 @@ def run_streamlit_app():
             repeats = pair_counts[pair_counts['Occurrences'] >= 2].sort_values(by='Occurrences', ascending=False)
 
             if not repeats.empty:
-                st.dataframe(
-                    repeats.style.format({'Occurrences': '{:,}'}),
-                    use_container_width=True
-                )
+                col_rep_chart, col_rep_tbl = st.columns([6, 6])
+                with col_rep_chart:
+                    repeats['Station_Fault'] = repeats['Station ID'].astype(str) + " - " + repeats['Issue Sub-Type'].astype(str)
+                    plot_vertical_bar(repeats.head(10), x_col='Station_Fault', y_col='Occurrences', title="Top 10 Repetitive Station Faults", color_hex="#DC2626")
+                with col_rep_tbl:
+                    st.write("##### Repetitive Fault Data Table")
+                    st.dataframe(
+                        repeats.style.format({'Occurrences': '{:,}'}),
+                        use_container_width=True
+                    )
             else:
-                st.success("✅ No repetitive faults found in selected dataset.")
-
-        st.markdown("---")
-
-        col_stat, col_sev, col_cust = st.columns(3)
-
-        # 4. Status Breakdown
-        with col_stat:
-            st.markdown('<div class="section-header">4. Status Breakdown</div>', unsafe_allow_html=True)
-            if 'Status' in filtered_issue_df.columns:
-                status_counts = filtered_issue_df['Status'].value_counts().reset_index()
-                status_counts.columns = ['Status', 'Count']
-                st.dataframe(status_counts, use_container_width=True)
-                st.bar_chart(status_counts.set_index('Status'), color="#2563EB", height=200)
-
-        # 5. Severity Breakdown
-        with col_sev:
-            st.markdown('<div class="section-header">5. Severity Breakdown</div>', unsafe_allow_html=True)
-            if 'Severity' in filtered_issue_df.columns:
-                sev_counts = filtered_issue_df['Severity'].value_counts().reset_index()
-                sev_counts.columns = ['Severity', 'Count']
-                st.dataframe(sev_counts, use_container_width=True)
-                st.bar_chart(sev_counts.set_index('Severity'), color="#EF4444", height=200)
-
-        # 6. Customer Filter Segment
-        with col_cust:
-            st.markdown('<div class="section-header">6. Customer Segment (B2B / B2C)</div>', unsafe_allow_html=True)
-            if 'B2B/ B2C' in filtered_issue_df.columns:
-                cust_counts = filtered_issue_df['B2B/ B2C'].value_counts().reset_index()
-                cust_counts.columns = ['Segment', 'Count']
-                st.dataframe(cust_counts, use_container_width=True)
-                st.bar_chart(cust_counts.set_index('Segment'), color="#10B981", height=200)
+                st.success("✅ Zero repetitive station faults found in selected dataset.")
 
     # ---------------------------------------------------------
-    # TAB 2: PM F-01 DASHBOARD
+    # TAB 2: PM F-01 DASHBOARD & PRESENTATION CHARTS
     # ---------------------------------------------------------
     with tab_pm:
-        st.markdown('<div class="section-header">🛠️ Preventive Maintenance (PM F-01) Dashboard</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-header">🛠️ Preventive Maintenance (PM F-01) Executive Presentation</div>', unsafe_allow_html=True)
 
         pm_df = raw_pm_df.copy()
 
@@ -750,7 +886,6 @@ def run_streamlit_app():
         pm_done = len(pm_df[pm_df['PM Status'].astype(str).str.upper() == 'YES']) if 'PM Status' in pm_df.columns else 0
         pm_pending = len(pm_df[pm_df['PM Status'].astype(str).str.upper() == 'NO']) if 'PM Status' in pm_df.columns else 0
         
-        # Advance PM Done calculation
         if 'Advance PM Done' in pm_df.columns:
             advance_done = len(pm_df[pm_df['Advance PM Done'].astype(str).str.upper() == 'YES'])
         elif 'Actual Completion Date Parsed' in pm_df.columns and 'Due Date Parsed' in pm_df.columns:
@@ -764,7 +899,6 @@ def run_streamlit_app():
 
         pm_eff = (pm_done / total_pm_planning * 100) if total_pm_planning > 0 else 0.0
 
-        # Unique Chargers and Stations Count
         total_chargers = len(pm_df['Charger ID'].dropna().unique()) if 'Charger ID' in pm_df.columns else len(pm_df)
         total_stations = len(pm_df['Station ID'].dropna().unique()) if 'Station ID' in pm_df.columns else len(pm_df)
 
@@ -813,48 +947,84 @@ def run_streamlit_app():
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # PM Summary by ZME Table
-        st.markdown('<div class="section-header">⚙️ PM F-01 Detailed Summary by ZME Name</div>', unsafe_allow_html=True)
+        # Presentation Charts Row 1: PM Status Donut Chart & ZME PM Completion Rate Vertical Bar Chart
+        col_pm_pie, col_pm_bar = st.columns([5, 7])
 
+        with col_pm_pie:
+            st.markdown('<div class="section-header">🍩 1. PM Execution Status Ratio (Pie Chart)</div>', unsafe_allow_html=True)
+            plot_pie_chart(
+                labels=['PM Done (Completed)', 'PM Pending (Scheduled)', 'Advance PM Done'],
+                values=[pm_done, pm_pending, advance_done],
+                title="PM Execution Status Distribution",
+                colors=['#10B981', '#EF4444', '#2563EB'],
+                hole=0.45
+            )
+
+        with col_pm_bar:
+            st.markdown('<div class="section-header">📊 2. PM Planning vs Completion by ZME (Grouped Chart)</div>', unsafe_allow_html=True)
+
+            if 'ZME' in pm_df.columns and 'PM Status' in pm_df.columns:
+                group_keys = ['ZME']
+                if 'Zone' in pm_df.columns:
+                    group_keys.append('Zone')
+
+                pm_summary_list = []
+                for name_tuple, group in pm_df.groupby(group_keys):
+                    zme_name = name_tuple[0] if isinstance(name_tuple, tuple) else name_tuple
+                    zone_val = name_tuple[1] if isinstance(name_tuple, tuple) and len(name_tuple) > 1 else (group['Zone'].iloc[0] if 'Zone' in group.columns else 'N/A')
+
+                    chargers_cnt = len(group['Charger ID'].dropna().unique()) if 'Charger ID' in group.columns else len(group)
+                    stations_cnt = len(group['Station ID'].dropna().unique()) if 'Station ID' in group.columns else len(group)
+                    planning_cnt = len(group)
+                    done_cnt = (group['PM Status'].astype(str).str.upper() == 'YES').sum()
+                    pending_cnt = (group['PM Status'].astype(str).str.upper() == 'NO').sum()
+                    
+                    if 'Advance PM Done' in group.columns:
+                        adv_cnt = (group['Advance PM Done'].astype(str).str.upper() == 'YES').sum()
+                    elif 'Actual Completion Date Parsed' in group.columns and 'Due Date Parsed' in group.columns:
+                        adv_cnt = ((group['Actual Completion Date Parsed'].notna()) & (group['Due Date Parsed'].notna()) & (group['Actual Completion Date Parsed'] < group['Due Date Parsed'])).sum()
+                    else:
+                        adv_cnt = 0
+
+                    eff_val = (done_cnt / planning_cnt * 100) if planning_cnt > 0 else 0.0
+
+                    pm_summary_list.append({
+                        'ZME Name': zme_name,
+                        'Zone': zone_val,
+                        'Total Chargers': chargers_cnt,
+                        'Total Stations': stations_cnt,
+                        'PM Planning': planning_cnt,
+                        'PM Done': done_cnt,
+                        'PM Pending': pending_cnt,
+                        'Advance PM Done': adv_cnt,
+                        'PM Efficiency (%)': round(eff_val, 1)
+                    })
+
+                pm_summary_df = pd.DataFrame(pm_summary_list).sort_values(by='PM Planning', ascending=False)
+
+                plot_grouped_bar(
+                    df=pm_summary_df,
+                    x_col='ZME Name',
+                    y_cols=['PM Planning', 'PM Done', 'PM Pending'],
+                    title="PM Work Orders Scheduled vs Completed per ZME",
+                    colors=['#2563EB', '#10B981', '#EF4444']
+                )
+
+        st.markdown("---")
+
+        # Presentation Charts Row 2: Asset Infrastructure Density Chart & PM Detailed Table
+        st.markdown('<div class="section-header">⚙️ 3. Asset Infrastructure & Detailed PM Performance Table</div>', unsafe_allow_html=True)
+        
         if 'ZME' in pm_df.columns and 'PM Status' in pm_df.columns:
-            group_keys = ['ZME']
-            if 'Zone' in pm_df.columns:
-                group_keys.append('Zone')
+            plot_grouped_bar(
+                df=pm_summary_df,
+                x_col='ZME Name',
+                y_cols=['Total Chargers', 'Total Stations'],
+                title="Total Chargers vs Total Stations Managed by ZME",
+                colors=['#0F172A', '#3B82F6']
+            )
 
-            pm_summary_list = []
-            for name_tuple, group in pm_df.groupby(group_keys):
-                zme_name = name_tuple[0] if isinstance(name_tuple, tuple) else name_tuple
-                zone_val = name_tuple[1] if isinstance(name_tuple, tuple) and len(name_tuple) > 1 else (group['Zone'].iloc[0] if 'Zone' in group.columns else 'N/A')
-
-                chargers_cnt = len(group['Charger ID'].dropna().unique()) if 'Charger ID' in group.columns else len(group)
-                stations_cnt = len(group['Station ID'].dropna().unique()) if 'Station ID' in group.columns else len(group)
-                planning_cnt = len(group)
-                done_cnt = (group['PM Status'].astype(str).str.upper() == 'YES').sum()
-                pending_cnt = (group['PM Status'].astype(str).str.upper() == 'NO').sum()
-                
-                if 'Advance PM Done' in group.columns:
-                    adv_cnt = (group['Advance PM Done'].astype(str).str.upper() == 'YES').sum()
-                elif 'Actual Completion Date Parsed' in group.columns and 'Due Date Parsed' in group.columns:
-                    adv_cnt = ((group['Actual Completion Date Parsed'].notna()) & (group['Due Date Parsed'].notna()) & (group['Actual Completion Date Parsed'] < group['Due Date Parsed'])).sum()
-                else:
-                    adv_cnt = 0
-
-                eff_val = (done_cnt / planning_cnt * 100) if planning_cnt > 0 else 0.0
-
-                pm_summary_list.append({
-                    'ZME Name': zme_name,
-                    'Zone': zone_val,
-                    'Total Chargers': chargers_cnt,
-                    'Total Stations': stations_cnt,
-                    'PM Planning': planning_cnt,
-                    'PM Done': done_cnt,
-                    'PM Pending': pending_cnt,
-                    'Advance PM Done': adv_cnt,
-                    'PM Efficiency (%)': round(eff_val, 1)
-                })
-
-            pm_summary_df = pd.DataFrame(pm_summary_list).sort_values(by='PM Planning', ascending=False)
-
+            st.write("##### Detailed PM F-01 Breakdown Table")
             st.dataframe(
                 pm_summary_df.style.format({
                     'Total Chargers': '{:,}',
