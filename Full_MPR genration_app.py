@@ -45,14 +45,49 @@ def get_val(row_tuple, idx, default=None):
     return default
 
 
+def select_sheet_name(sheetnames, preferred_names, fallback_keyword):
+    """
+    Selects the target sheet name from a workbook's sheetnames list.
+    Prioritizes exact matching (case-insensitive & whitespace trimmed) against preferred_names
+    (e.g., 'PM Tracker B2C- B2B', 'Issue Tracker'), then partial matching, then keyword match.
+    Only takes the specified tracker sheet from the workbook.
+    """
+    if not sheetnames:
+        return None
+    
+    clean_map = {str(s).strip().lower(): s for s in sheetnames if s is not None}
+    
+    # 1. Exact match (case-insensitive, trimmed)
+    for pref in preferred_names:
+        pref_clean = pref.strip().lower()
+        if pref_clean in clean_map:
+            return clean_map[pref_clean]
+            
+    # 2. Substring match for preferred names
+    for pref in preferred_names:
+        pref_clean = pref.strip().lower()
+        for s in sheetnames:
+            if s and pref_clean in str(s).strip().lower():
+                return s
+                
+    # 3. Fallback keyword search
+    for s in sheetnames:
+        if s and fallback_keyword.lower() in str(s).strip().lower():
+            return s
+            
+    # 4. Fallback to first sheet
+    return sheetnames[0]
+
+
 def load_issue_tracker(source):
+    preferred_sheets = ['Issue Tracker', 'Issue Data']
     if isinstance(source, pd.DataFrame):
         df = source
     elif isinstance(source, bytes):
         if source.startswith(b'PK\x03\x04'):
             source_stream = io.BytesIO(source)
             wb = openpyxl.load_workbook(source_stream, data_only=True)
-            sheet_name = 'Issue Tracker' if 'Issue Tracker' in wb.sheetnames else wb.sheetnames[0]
+            sheet_name = select_sheet_name(wb.sheetnames, preferred_sheets, 'issue')
             rows = list(wb[sheet_name].iter_rows(values_only=True))
             if not rows:
                 return pd.DataFrame()
@@ -70,7 +105,7 @@ def load_issue_tracker(source):
                 wb = openpyxl.load_workbook(io.BytesIO(source.read()), data_only=True)
         else:
             wb = source
-        sheet_name = 'Issue Tracker' if 'Issue Tracker' in wb.sheetnames else wb.sheetnames[0]
+        sheet_name = select_sheet_name(wb.sheetnames, preferred_sheets, 'issue')
         rows = list(wb[sheet_name].iter_rows(values_only=True))
         if not rows:
             return pd.DataFrame()
@@ -83,6 +118,7 @@ def load_issue_tracker(source):
 
 
 def load_pm_tracker(source):
+    preferred_sheets = ['PM Tracker B2C- B2B', 'PM Tracker B2C-B2B', 'PM Tracker B2C - B2B', 'PM Tracker', 'PM Data']
     if isinstance(source, pd.DataFrame):
         df = source
     elif isinstance(source, bytes):
@@ -96,7 +132,7 @@ def load_pm_tracker(source):
             if 'Actual Completion Date' in df.columns:
                 df['Actual Completion Date Parsed'] = pd.to_datetime(df['Actual Completion Date'], errors='coerce')
             return df
-        sheet_name = 'PM Tracker' if 'PM Tracker' in wb.sheetnames else wb.sheetnames[0]
+        sheet_name = select_sheet_name(wb.sheetnames, preferred_sheets, 'pm')
         rows = list(wb[sheet_name].iter_rows(values_only=True))
         if not rows:
             return pd.DataFrame()
@@ -143,7 +179,7 @@ def load_pm_tracker(source):
                 wb = openpyxl.load_workbook(io.BytesIO(source.read()), data_only=True)
         else:
             wb = source
-        sheet_name = 'PM Tracker' if 'PM Tracker' in wb.sheetnames else wb.sheetnames[0]
+        sheet_name = select_sheet_name(wb.sheetnames, preferred_sheets, 'pm')
         rows = list(wb[sheet_name].iter_rows(values_only=True))
         if not rows:
             return pd.DataFrame()
@@ -685,7 +721,7 @@ def run_streamlit_app():
         with c_mode2:
             st.markdown("""
             #### 📁 Option B: Upload 1 Single Merged File
-            - Single Excel workbook (`.xlsx`) containing both `Issue Tracker` & `PM Tracker` worksheets.
+            - Single Excel workbook (`.xlsx`) containing `PM Tracker B2C- B2B` & `Issue Tracker` worksheets.
             """)
         return
 
