@@ -780,8 +780,75 @@ def run_streamlit_app():
         </div>
     """, unsafe_allow_html=True)
 
-    # Sidebar Panel
+    # ---------------------------------------------------------
+    # OFFICE EMAIL AUTHENTICATION GATE (MAX 10 AUTHORIZED USERS)
+    # ---------------------------------------------------------
+    PUBLIC_DOMAINS = {
+        'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'icloud.com',
+        'yandex.com', 'mail.com', 'zoho.com', 'aol.com', 'gmx.com', 'protonmail.com', 'live.com'
+    }
+
+    if 'auth_email' not in st.session_state:
+        st.session_state['auth_email'] = None
+
+    if 'authorized_office_emails' not in st.session_state:
+        st.session_state['authorized_office_emails'] = []
+
+    # Authentication Lock Screen
+    if st.session_state['auth_email'] is None:
+        st.markdown("---")
+        st.markdown("### 🔒 Office Domain Access Authentication")
+        st.markdown("Please verify your official corporate office email address to access the Executive MPR Governance Dashboard.")
+
+        c_auth1, c_auth2 = st.columns([7, 5])
+        with c_auth1:
+            input_email = st.text_input(
+                "🏢 Enter your Official Office Email Address:",
+                placeholder="e.g. alex.smith@chargezone.com",
+                key="office_email_input"
+            )
+            login_btn = st.button("🔐 Verify & Access Dashboard", type="primary")
+
+            if login_btn and input_email:
+                clean_email = input_email.strip().lower()
+                if '@' not in clean_email or '.' not in clean_email.split('@')[-1]:
+                    st.error("❌ **Invalid Email Format**: Please enter a complete email address (e.g. user@company.com).")
+                else:
+                    domain = clean_email.split('@')[-1]
+                    if domain in PUBLIC_DOMAINS:
+                        st.error(f"❌ **Public Email Restricted**: `{domain}` is a public email provider. Please use your official corporate office email address.")
+                    else:
+                        # Check 10 User Limit
+                        if clean_email in st.session_state['authorized_office_emails']:
+                            st.session_state['auth_email'] = clean_email
+                            st.success(f"✓ Access Granted! Welcome back, `{clean_email}`.")
+                            st.rerun()
+                        elif len(st.session_state['authorized_office_emails']) < 10:
+                            st.session_state['authorized_office_emails'].append(clean_email)
+                            st.session_state['auth_email'] = clean_email
+                            st.success(f"✓ Account Registered ({len(st.session_state['authorized_office_emails'])}/10 slots used). Welcome, `{clean_email}`!")
+                            st.rerun()
+                        else:
+                            st.error("⛔ **Access Denied**: Maximum limit of **10 authorized office email users** has been reached. Please contact your administrator.")
+
+        with c_auth2:
+            st.info(f"""
+            #### 🛡️ Access Policy & Governance
+            - **Domain Requirement**: Any Corporate / Office Email Domain (`@company.com`, `@chargezone.com`, etc.). Public emails are restricted.
+            - **User Access Limit**: Strictly capped at **10 Authorized Person Accounts**.
+            - **Current Registered Users**: `{len(st.session_state['authorized_office_emails'])} / 10 Slots Used`.
+            """)
+        return
+
+    # Sidebar Profile & Control Panel
     st.sidebar.markdown("### ⚙️ Control Panel")
+    st.sidebar.markdown("---")
+
+    st.sidebar.markdown("#### 🔒 Authenticated Session")
+    st.sidebar.info(f"👤 **User**: `{st.session_state['auth_email']}`\n\n🏢 **Status**: Corporate Office User ({len(st.session_state['authorized_office_emails'])}/10 Slots Used)")
+    if st.sidebar.button("🚪 Logout"):
+        st.session_state['auth_email'] = None
+        st.rerun()
     st.sidebar.markdown("---")
 
     MAX_FILE_SIZE_MB = 20
