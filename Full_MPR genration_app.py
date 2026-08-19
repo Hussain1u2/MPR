@@ -1,12 +1,16 @@
+import io
 import sys
 from datetime import datetime
 
 import pandas as pd
+import openpyxl
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
+import streamlit as st
 
+# Styling constants for OpenPyXL excel generation
 FONT = 'Arial'
 HEADER_FILL = PatternFill('solid', fgColor='1F4E78')
 HEADER_FONT = Font(name=FONT, size=10, bold=True, color='FFFFFF')
@@ -28,11 +32,13 @@ PM_QUARTER_BLOCKS = {
 
 PM_STATION_COLS = list(range(0, 13))
 
+
 def load_issue_tracker(wb):
     rows = list(wb['Issue Tracker'].iter_rows(values_only=True))
     headers = [h.strip() if isinstance(h, str) else h for h in rows[0]]
     df = pd.DataFrame(rows[1:], columns=headers).dropna(how='all')
     return df
+
 
 def load_pm_tracker(wb):
     rows = list(wb['PM Tracker'].iter_rows(values_only=True))
@@ -60,6 +66,7 @@ def load_pm_tracker(wb):
                 })
                 col += 4
     return pd.DataFrame(records).rename(columns={'Route ': 'Route'})
+
 
 def write_data_sheet(wb, name, df, table_name, date_cols):
     ws = wb.create_sheet(name)
@@ -92,10 +99,6 @@ def write_data_sheet(wb, name, df, table_name, date_cols):
 
 
 def add_pm_helper_columns(ws, pm_df, pcol, last_row):
-    """Adds two formula columns PM Data needs but the raw tracker doesn't have:
-    Advance PM Done (completed ahead of the due month) and First Station
-    Occurrence (flags one row per ZME+Station, so distinct-station counts on
-    the dashboard don't need array formulas)."""
     due_col, done_col = pcol['Due Date'], pcol['Actual Completion Date']
     adv_idx = len(pm_df.columns) + 1
     adv_letter = get_column_letter(adv_idx)
@@ -250,9 +253,8 @@ def build_pm_dashboard(wb, pm_df, prange):
         ws.column_dimensions[col].width = width
 
 
-def generate(source_path, output_path):
-    import openpyxl
-    src = openpyxl.load_workbook(source_path, data_only=True)
+def generate_workbook(source_input):
+    src = openpyxl.load_workbook(source_input, data_only=True)
     issue_df = load_issue_tracker(src)
     pm_df = load_pm_tracker(src)
 
@@ -281,15 +283,401 @@ def generate(source_path, output_path):
     build_issue_dashboard(wb, issue_df, irange)
     build_pm_dashboard(wb, pm_df, prange)
     wb.active = 0
-    wb.save(output_path)
+    return wb, issue_df, pm_df
+
+
+def run_streamlit_app():
+    st.set_page_config(
+        page_title="ChargeZone | Monthly Progress Report (MPR) Executive Dashboard",
+        page_icon="⚡",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+
+    # Executive Custom Styling
+    st.markdown("""
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        
+        html, body, [class*="css"] {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+
+        .exec-header-box {
+            background: linear-gradient(135deg, #0F172A 0%, #1E293B 100%);
+            padding: 1.5rem 2rem;
+            border-radius: 12px;
+            color: #FFFFFF;
+            box-shadow: 0 4px 20px rgba(15, 23, 42, 0.15);
+            margin-bottom: 1.5rem;
+            border-left: 6px solid #2563EB;
+        }
+
+        .exec-badge {
+            background-color: #2563EB;
+            color: #FFFFFF;
+            font-size: 0.75rem;
+            font-weight: 700;
+            padding: 4px 10px;
+            border-radius: 20px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            display: inline-block;
+            margin-bottom: 0.5rem;
+        }
+
+        .exec-title {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #F8FAFC;
+            margin: 0;
+            line-height: 1.2;
+        }
+
+        .exec-subtitle {
+            font-size: 0.95rem;
+            color: #94A3B8;
+            margin-top: 0.4rem;
+            margin-bottom: 0;
+        }
+
+        /* Metric Box Styling */
+        .metric-card {
+            background: #FFFFFF;
+            border: 1px solid #E2E8F0;
+            border-radius: 10px;
+            padding: 1.2rem;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.02);
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .metric-card:hover {
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+        }
+        .metric-card.blue { border-top: 4px solid #2563EB; }
+        .metric-card.green { border-top: 4px solid #10B981; }
+        .metric-card.red { border-top: 4px solid #EF4444; }
+        .metric-card.amber { border-top: 4px solid #F59E0B; }
+
+        .metric-label {
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: #64748B;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .metric-val {
+            font-size: 1.8rem;
+            font-weight: 700;
+            color: #0F172A;
+            margin-top: 0.3rem;
+        }
+        .metric-sub {
+            font-size: 0.8rem;
+            color: #64748B;
+            margin-top: 0.2rem;
+        }
+
+        .section-header {
+            font-size: 1.15rem;
+            font-weight: 700;
+            color: #0F172A;
+            margin-top: 1rem;
+            margin-bottom: 0.8rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        /* Custom Table Styling */
+        .stDataFrame {
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1px solid #E2E8F0;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # Executive Header
+    st.markdown("""
+        <div class="exec-header-box">
+            <span class="exec-badge">ChargeZone Operational Excellence</span>
+            <h1 class="exec-title">Monthly Progress Report (MPR) Executive Intelligence</h1>
+            <p class="exec-subtitle">Automated Analytics Engine & Governance Dashboard for Infrastructure, Preventive Maintenance (PM) & Service Level Agreement (SLA) Tracking.</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # Sidebar Panel
+    st.sidebar.markdown("### ⚙️ Operational Control Panel")
+    st.sidebar.markdown("---")
+
+    st.sidebar.markdown("#### 1. Source Data Input")
+    uploaded_file = st.sidebar.file_uploader("Upload Work Order & Tracker Excel (.xlsx)", type=["xlsx"])
+
+    use_default = False
+    default_path = "issue,pm tracker merged.xlsx"
+    if uploaded_file is None:
+        try:
+            import os
+            if os.path.exists(default_path):
+                use_default = st.sidebar.checkbox("Load Production Dataset (`issue,pm tracker merged.xlsx`)", value=True)
+        except Exception:
+            pass
+
+    source_input = None
+    file_name = None
+
+    if uploaded_file is not None:
+        source_input = uploaded_file
+        file_name = uploaded_file.name
+    elif use_default:
+        source_input = default_path
+        file_name = default_path
+
+    if source_input is None:
+        st.info("📌 **Action Required**: Please upload an Operational Tracker Workbook (`.xlsx`) containing `Issue Tracker` and `PM Tracker` worksheets to populate executive metrics.")
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("**Expected Workbook Structure:**")
+        st.sidebar.markdown("- `Issue Tracker` (Incidents, Severity, SLA/TAT)")
+        st.sidebar.markdown("- `PM Tracker` (Preventive Maintenance Schedules)")
+        return
+
+    st.sidebar.success(f"✓ Connected: `{file_name}`")
+    st.sidebar.markdown("---")
+
+    # Processing Workbook
+    with st.spinner("Processing Operational Data Engine..."):
+        try:
+            wb, issue_df, pm_df = generate_workbook(source_input)
+            output_buffer = io.BytesIO()
+            wb.save(output_buffer)
+            output_buffer.seek(0)
+        except Exception as e:
+            st.error(f"⚠️ **Processing Exception**: Unable to read operational workbook. Details: {e}")
+            st.exception(e)
+            return
+
+    # Sidebar Download Section
+    st.sidebar.markdown("#### 2. Report Export Engine")
+    timestamp = datetime.now().strftime("%Y-%m")
+    out_filename = f"ChargeZone_MPR_Executive_Report_{timestamp}.xlsx"
+
+    st.sidebar.download_button(
+        label="📥 Download Executive Excel Report",
+        data=output_buffer,
+        file_name=out_filename,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        type="primary"
+    )
+
+    st.sidebar.markdown("---")
+    st.sidebar.caption("🔒 **Security & Governance**: All computations are performed in-memory adhering to enterprise compliance standard ISO/IEC 27001.")
+
+    # Main Tabs
+    tab_issues, tab_pm, tab_raw = st.tabs([
+        "📊 Incident Management & SLA Adherence",
+        "🛠️ Preventive Maintenance (PM F-01)",
+        "📄 Operational Master Data Explorer"
+    ])
+
+    # ---------------------------------------------------------
+    # TAB 1: INCIDENT MANAGEMENT & SLA ADHERENCE
+    # ---------------------------------------------------------
+    with tab_issues:
+        st.markdown('<div class="section-header">📈 Executive SLA & Incident Analytics</div>', unsafe_allow_html=True)
+        
+        total_issues = len(issue_df)
+        within_tat = len(issue_df[issue_df['TAT Compliance'].astype(str).str.upper() == 'YES']) if 'TAT Compliance' in issue_df.columns else 0
+        without_tat = len(issue_df[issue_df['TAT Compliance'].astype(str).str.upper() == 'NO']) if 'TAT Compliance' in issue_df.columns else 0
+        tat_eff = (within_tat / total_issues * 100) if total_issues > 0 else 0.0
+
+        # High-Impact KPI Row
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.markdown(f"""
+                <div class="metric-card blue">
+                    <div class="metric-label">Total Incidents Logged</div>
+                    <div class="metric-val">{total_issues:,}</div>
+                    <div class="metric-sub">Active Work Orders</div>
+                </div>
+            """, unsafe_allow_html=True)
+        with c2:
+            st.markdown(f"""
+                <div class="metric-card green">
+                    <div class="metric-label">SLA Compliant (Within TAT)</div>
+                    <div class="metric-val">{within_tat:,}</div>
+                    <div class="metric-sub">Resolved On Schedule</div>
+                </div>
+            """, unsafe_allow_html=True)
+        with c3:
+            st.markdown(f"""
+                <div class="metric-card red">
+                    <div class="metric-label">SLA Breaches (Without TAT)</div>
+                    <div class="metric-val">{without_tat:,}</div>
+                    <div class="metric-sub">Requires Escalation</div>
+                </div>
+            """, unsafe_allow_html=True)
+        with c4:
+            st.markdown(f"""
+                <div class="metric-card {'green' if tat_eff >= 85 else 'amber'}">
+                    <div class="metric-label">Overall SLA Efficiency</div>
+                    <div class="metric-val">{tat_eff:.1f}%</div>
+                    <div class="metric-sub">Target Benchmark: ≥ 85.0%</div>
+                </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # Region & Zone Analytics
+        col_left, col_right = st.columns([6, 5])
+
+        with col_left:
+            st.markdown('<div class="section-header">🏢 Incident Distribution & SLA Compliance by ZME</div>', unsafe_allow_html=True)
+            if 'ZME' in issue_df.columns and 'TAT Compliance' in issue_df.columns:
+                zme_summary = issue_df.groupby('ZME').agg(
+                    Total_Tickets=('Status', 'count'),
+                    SLA_Compliant=('TAT Compliance', lambda s: (s.astype(str).str.upper() == 'YES').sum()),
+                    SLA_Breached=('TAT Compliance', lambda s: (s.astype(str).str.upper() == 'NO').sum())
+                ).reset_index()
+                zme_summary['SLA Efficiency %'] = (zme_summary['SLA_Compliant'] / zme_summary['Total_Tickets'] * 100).round(1)
+                zme_summary = zme_summary.sort_values(by='Total_Tickets', ascending=False)
+                
+                st.dataframe(
+                    zme_summary.style.format({
+                        'Total_Tickets': '{:,}',
+                        'SLA_Compliant': '{:,}',
+                        'SLA_Breached': '{:,}',
+                        'SLA Efficiency %': '{:.1f}%'
+                    }).background_gradient(subset=['SLA Efficiency %'], cmap='Blues'),
+                    use_container_width=True,
+                    height=320
+                )
+
+        with col_right:
+            st.markdown('<div class="section-header">📌 Incident Status Pipeline</div>', unsafe_allow_html=True)
+            if 'Status' in issue_df.columns:
+                status_df = issue_df['Status'].value_counts().reset_index()
+                status_df.columns = ['Status', 'Count']
+                st.bar_chart(status_df.set_index('Status'), color="#2563EB", height=320)
+
+        st.markdown("---")
+
+        # Repetitive Faults Operational Risk Analysis
+        st.markdown('<div class="section-header">⚠️ Operational Risk Alert: Repetitive Station Faults</div>', unsafe_allow_html=True)
+        st.caption("Stations experiencing multiple occurrences of the same fault sub-type (≥ 2 incidents) requiring engineering root-cause analysis (RCA).")
+
+        if 'Station ID' in issue_df.columns and 'Issue Sub-Type' in issue_df.columns:
+            pair_counts = issue_df.groupby(['Station ID', 'Issue Sub-Type']).size().reset_index(name='Occurrence Count')
+            repeats = pair_counts[pair_counts['Occurrence Count'] >= 2].sort_values(by='Occurrence Count', ascending=False)
+            
+            if not repeats.empty:
+                st.dataframe(
+                    repeats.style.format({'Occurrence Count': '{:,}'}),
+                    use_container_width=True
+                )
+            else:
+                st.success("✅ **Zero Critical Risks**: No repetitive station fault patterns detected in current period data.")
+
+    # ---------------------------------------------------------
+    # TAB 2: PREVENTIVE MAINTENANCE (PM F-01)
+    # ---------------------------------------------------------
+    with tab_pm:
+        st.markdown('<div class="section-header">⚙️ Preventive Maintenance (PM F-01) Operational Performance</div>', unsafe_allow_html=True)
+
+        total_pm = len(pm_df)
+        pm_done = len(pm_df[pm_df['PM Status'].astype(str).str.upper() == 'YES']) if 'PM Status' in pm_df.columns else 0
+        pm_pending = len(pm_df[pm_df['PM Status'].astype(str).str.upper() == 'NO']) if 'PM Status' in pm_df.columns else 0
+        pm_eff_pct = (pm_done / total_pm * 100) if total_pm > 0 else 0.0
+
+        p1, p2, p3, p4 = st.columns(4)
+        with p1:
+            st.markdown(f"""
+                <div class="metric-card blue">
+                    <div class="metric-label">Scheduled PM Inspections</div>
+                    <div class="metric-val">{total_pm:,}</div>
+                    <div class="metric-sub">YTD Scheduled Cycles</div>
+                </div>
+            """, unsafe_allow_html=True)
+        with p2:
+            st.markdown(f"""
+                <div class="metric-card green">
+                    <div class="metric-label">Completed Inspections</div>
+                    <div class="metric-val">{pm_done:,}</div>
+                    <div class="metric-sub">Verified & Closed</div>
+                </div>
+            """, unsafe_allow_html=True)
+        with p3:
+            st.markdown(f"""
+                <div class="metric-card red">
+                    <div class="metric-label">Pending Backlog</div>
+                    <div class="metric-val">{pm_pending:,}</div>
+                    <div class="metric-sub">Action Required</div>
+                </div>
+            """, unsafe_allow_html=True)
+        with p4:
+            st.markdown(f"""
+                <div class="metric-card {'green' if pm_eff_pct >= 90 else 'amber'}">
+                    <div class="metric-label">PM Execution Efficiency</div>
+                    <div class="metric-val">{pm_eff_pct:.1f}%</div>
+                    <div class="metric-sub">Target SLA: ≥ 90.0%</div>
+                </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        col_pm_a, col_pm_b = st.columns([6, 5])
+        with col_pm_a:
+            st.markdown('<div class="section-header">👷 PM Execution Summary by Zone Maintenance Engineer (ZME)</div>', unsafe_allow_html=True)
+            if 'ZME' in pm_df.columns and 'PM Status' in pm_df.columns:
+                pm_zme_df = pm_df.groupby('ZME').agg(
+                    Total_Scheduled=('PM Status', 'count'),
+                    Completed=('PM Status', lambda s: (s.astype(str).str.upper() == 'YES').sum()),
+                    Pending=('PM Status', lambda s: (s.astype(str).str.upper() == 'NO').sum())
+                ).reset_index()
+                pm_zme_df['PM Completion Rate %'] = (pm_zme_df['Completed'] / pm_zme_df['Total_Scheduled'] * 100).round(1)
+                pm_zme_df = pm_zme_df.sort_values(by='Total_Scheduled', ascending=False)
+                
+                st.dataframe(
+                    pm_zme_df.style.format({
+                        'Total_Scheduled': '{:,}',
+                        'Completed': '{:,}',
+                        'Pending': '{:,}',
+                        'PM Completion Rate %': '{:.1f}%'
+                    }).background_gradient(subset=['PM Completion Rate %'], cmap='Greens'),
+                    use_container_width=True
+                )
+
+        with col_pm_b:
+            st.markdown('<div class="section-header">📊 Preventive Maintenance Status Ratio</div>', unsafe_allow_html=True)
+            if 'PM Status' in pm_df.columns:
+                pm_stat_counts = pm_df['PM Status'].value_counts().reset_index()
+                pm_stat_counts.columns = ['Status', 'Count']
+                st.bar_chart(pm_stat_counts.set_index('Status'), color="#10B981", height=320)
+
+    # ---------------------------------------------------------
+    # TAB 3: OPERATIONAL MASTER DATA EXPLORER
+    # ---------------------------------------------------------
+    with tab_raw:
+        st.markdown('<div class="section-header">🔍 Master Data Governance & Audit Log</div>', unsafe_allow_html=True)
+        st.caption("Inspect granular record fields, verify timestamp formatting, and audit raw records before exporting.")
+
+        data_choice = st.radio("Select Operational Dataset:", ["Issue Tracker Master Data", "PM Tracker Master Data"], horizontal=True)
+
+        if data_choice == "Issue Tracker Master Data":
+            st.dataframe(issue_df, use_container_width=True)
+            st.caption(f"Showing total {len(issue_df):,} issue records.")
+        else:
+            st.dataframe(pm_df, use_container_width=True)
+            st.caption(f"Showing total {len(pm_df):,} PM records.")
 
 
 if __name__ == '__main__':
-    if len(sys.argv) < 2:
-        print('Usage: python3 generate_mpr_report.py <source.xlsx> [output.xlsx]')
-        sys.exit(1)
-    src_path = sys.argv[1]
-    out_path = sys.argv[2] if len(sys.argv) > 2 else f"MPR_Report_{datetime.now():%Y-%m}.xlsx"
-    generate(src_path, out_path)
-    print(f'Written: {out_path}')
-    print('Run recalc.py from the xlsx skill (or open in Excel and save) so formula values populate.')
+    # CLI execution support
+    if len(sys.argv) >= 2 and not sys.argv[1].startswith('-'):
+        src_path = sys.argv[1]
+        out_path = sys.argv[2] if len(sys.argv) > 2 else f"MPR_Report_{datetime.now():%Y-%m}.xlsx"
+        wb, _, _ = generate_workbook(src_path)
+        wb.save(out_path)
+        print(f'Written: {out_path}')
+    else:
+        run_streamlit_app()
