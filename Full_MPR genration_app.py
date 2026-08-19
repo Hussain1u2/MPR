@@ -79,6 +79,23 @@ def select_sheet_name(sheetnames, preferred_names, fallback_keyword):
     return sheetnames[0]
 
 
+def make_unique_headers(headers):
+    """Ensure all header column names are unique string values to prevent PyArrow rendering issues."""
+    seen = {}
+    unique_headers = []
+    for idx, h in enumerate(headers):
+        name = str(h).strip() if h is not None else f"Unnamed_{idx+1}"
+        if not name:
+            name = f"Unnamed_{idx+1}"
+        if name in seen:
+            seen[name] += 1
+            unique_headers.append(f"{name}_{seen[name]}")
+        else:
+            seen[name] = 0
+            unique_headers.append(name)
+    return unique_headers
+
+
 def load_issue_tracker(source):
     preferred_sheets = ['Issue Tracker', 'Issue Data']
     if isinstance(source, pd.DataFrame):
@@ -91,7 +108,7 @@ def load_issue_tracker(source):
             rows = list(wb[sheet_name].iter_rows(values_only=True))
             if not rows:
                 return pd.DataFrame()
-            headers = [h.strip() if isinstance(h, str) else h for h in rows[0] if h is not None]
+            headers = make_unique_headers([h.strip() if isinstance(h, str) else h for h in rows[0] if h is not None])
             df = pd.DataFrame([r[:len(headers)] for r in rows[1:]], columns=headers).dropna(how='all')
         else:
             df = pd.read_csv(io.BytesIO(source))
@@ -109,7 +126,7 @@ def load_issue_tracker(source):
         rows = list(wb[sheet_name].iter_rows(values_only=True))
         if not rows:
             return pd.DataFrame()
-        headers = [h.strip() if isinstance(h, str) else h for h in rows[0] if h is not None]
+        headers = make_unique_headers([h.strip() if isinstance(h, str) else h for h in rows[0] if h is not None])
         df = pd.DataFrame([r[:len(headers)] for r in rows[1:]], columns=headers).dropna(how='all')
 
     if 'Issue Date' in df.columns:
@@ -141,7 +158,7 @@ def load_pm_tracker(source):
         is_flat_table = any(k in first_row_str for k in ['zme', 'station id', 'charger id', 'pm status', 'due date']) or len(rows) <= 5
 
         if is_flat_table:
-            headers = [h.strip() if isinstance(h, str) else h for h in rows[0] if h is not None]
+            headers = make_unique_headers([h.strip() if isinstance(h, str) else h for h in rows[0] if h is not None])
             df = pd.DataFrame([r[:len(headers)] for r in rows[1:]], columns=headers).dropna(how='all')
         else:
             row_date = rows[3] if len(rows) > 3 else ()
@@ -188,7 +205,7 @@ def load_pm_tracker(source):
         is_flat_table = any(k in first_row_str for k in ['zme', 'station id', 'charger id', 'pm status', 'due date']) or len(rows) <= 5
 
         if is_flat_table:
-            headers = [h.strip() if isinstance(h, str) else h for h in rows[0] if h is not None]
+            headers = make_unique_headers([h.strip() if isinstance(h, str) else h for h in rows[0] if h is not None])
             df = pd.DataFrame([r[:len(headers)] for r in rows[1:]], columns=headers).dropna(how='all')
         else:
             row_date = rows[3] if len(rows) > 3 else ()
