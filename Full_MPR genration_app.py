@@ -571,10 +571,10 @@ def run_streamlit_app():
         initial_sidebar_state="expanded"
     )
 
-    # Professional Executive Styling - White Background & Red Theme (Pure Python Embedded)
+    # Executive Office Meeting Presentation Styling - White Background & High-Contrast Red Theme
     st.markdown("""
         <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
         
         /* Force White Background on Main Container & Header */
         .stApp, [data-testid="stMain"], [data-testid="stHeader"] {
@@ -582,37 +582,41 @@ def run_streamlit_app():
         }
 
         [data-testid="stSidebar"] {
-            background-color: #FAFAFA !important;
-            border-right: 1px solid #F3F4F6 !important;
+            background-color: #F8FAFC !important;
+            border-right: 1px solid #E2E8F0 !important;
         }
 
-        /* Dark Charcoal Typography */
+        /* Executive Typography for High-Readability Presentations */
         html, body, [class*="css"], p, span, label, div {
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-            color: #111827;
+            color: #0F172A;
         }
 
-        /* Executive Red Buttons */
+        /* Executive Red Buttons with Glow */
         .stButton > button, div[data-testid="stDownloadButton"] > button {
-            background: linear-gradient(135deg, #B91C1C 0%, #DC2626 100%) !important;
+            background: linear-gradient(135deg, #991B1B 0%, #DC2626 100%) !important;
             color: #FFFFFF !important;
             border-radius: 8px !important;
-            font-weight: 700 !important;
+            font-weight: 800 !important;
+            font-size: 0.95rem !important;
             border: none !important;
-            padding: 0.6rem 1.2rem !important;
-            box-shadow: 0 4px 12px rgba(185, 28, 28, 0.25) !important;
+            padding: 0.65rem 1.4rem !important;
+            box-shadow: 0 4px 14px rgba(185, 28, 28, 0.3) !important;
             transition: all 0.2s ease !important;
+            letter-spacing: 0.02em !important;
         }
         .stButton > button:hover, div[data-testid="stDownloadButton"] > button:hover {
-            background: linear-gradient(135deg, #991B1B 0%, #B91C1C 100%) !important;
-            box-shadow: 0 6px 16px rgba(153, 27, 27, 0.35) !important;
+            background: linear-gradient(135deg, #7F1D1D 0%, #B91C1C 100%) !important;
+            box-shadow: 0 6px 20px rgba(153, 27, 27, 0.45) !important;
+            transform: translateY(-1px) !important;
         }
 
-        /* Streamlit Tabs Red Accent */
+        /* Streamlit Tabs Red Accent for Meetings */
         button[data-baseweb="tab"] {
-            font-weight: 700 !important;
-            color: #4B5563 !important;
-            font-size: 0.95rem !important;
+            font-weight: 800 !important;
+            color: #475569 !important;
+            font-size: 1rem !important;
+            padding: 0.75rem 1.25rem !important;
         }
         button[data-baseweb="tab"][aria-selected="true"] {
             color: #991B1B !important;
@@ -620,113 +624,127 @@ def run_streamlit_app():
         }
         div[data-baseweb="tab-highlight"] {
             background-color: #DC2626 !important;
+            height: 3px !important;
         }
 
-        /* Header Box */
+        /* Meeting Header Box */
         .exec-header-box {
-            background: linear-gradient(135deg, #7F1D1D 0%, #B91C1C 50%, #DC2626 100%);
-            padding: 1.4rem 2rem;
-            border-radius: 12px;
+            background: linear-gradient(135deg, #7F1D1D 0%, #B91C1C 45%, #DC2626 100%);
+            padding: 1.5rem 2.2rem;
+            border-radius: 14px;
             color: #FFFFFF;
-            box-shadow: 0 10px 25px rgba(185, 28, 28, 0.2);
-            margin-bottom: 1.4rem;
+            box-shadow: 0 12px 30px rgba(185, 28, 28, 0.22);
+            margin-bottom: 1.5rem;
             border-left: 8px solid #991B1B;
         }
 
         .exec-badge {
-            background-color: rgba(255, 255, 255, 0.2);
+            background-color: rgba(255, 255, 255, 0.22);
             color: #FFFFFF;
-            font-size: 0.72rem;
-            font-weight: 700;
-            padding: 4px 12px;
+            font-size: 0.73rem;
+            font-weight: 800;
+            padding: 5px 14px;
             border-radius: 20px;
-            letter-spacing: 0.08em;
+            letter-spacing: 0.09em;
             text-transform: uppercase;
             display: inline-block;
-            margin-bottom: 0.4rem;
-            border: 1px solid rgba(255, 255, 255, 0.35);
+            margin-bottom: 0.5rem;
+            border: 1px solid rgba(255, 255, 255, 0.4);
+            backdrop-filter: blur(4px);
         }
 
         .exec-title {
-            font-size: 1.95rem;
-            font-weight: 800;
+            font-size: 2.1rem;
+            font-weight: 900;
             color: #FFFFFF;
             margin: 0;
             line-height: 1.2;
-            letter-spacing: -0.02em;
+            letter-spacing: -0.025em;
         }
 
         .exec-subtitle {
-            font-size: 0.92rem;
-            color: #FECACA;
-            margin-top: 0.3rem;
+            font-size: 0.95rem;
+            color: #FEE2E2;
+            margin-top: 0.35rem;
             margin-bottom: 0;
+            font-weight: 500;
         }
 
-        /* Metric Cards */
+        /* Metric Cards for Office Presentation */
         .metric-card {
             background: #FFFFFF;
-            border: 1px solid #E5E7EB;
-            border-radius: 10px;
-            padding: 1rem 1.2rem;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
+            border: 1px solid #E2E8F0;
+            border-radius: 12px;
+            padding: 1.1rem 1.3rem;
+            box-shadow: 0 4px 16px rgba(15, 23, 42, 0.04);
             transition: transform 0.2s ease, box-shadow 0.2s ease;
         }
         .metric-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 16px rgba(220, 38, 38, 0.08);
+            transform: translateY(-3px);
+            box-shadow: 0 8px 24px rgba(220, 38, 38, 0.12);
         }
-        .metric-card.red { border-top: 4px solid #DC2626; }
-        .metric-card.darkred { border-top: 4px solid #991B1B; }
-        .metric-card.green { border-top: 4px solid #16A34A; }
-        .metric-card.amber { border-top: 4px solid #F59E0B; }
+        .metric-card.red { border-top: 5px solid #DC2626; }
+        .metric-card.darkred { border-top: 5px solid #991B1B; }
+        .metric-card.green { border-top: 5px solid #15803D; }
+        .metric-card.amber { border-top: 5px solid #D97706; }
 
         .metric-label {
-            font-size: 0.73rem;
-            font-weight: 700;
-            color: #4B5563;
+            font-size: 0.74rem;
+            font-weight: 800;
+            color: #475569;
             text-transform: uppercase;
-            letter-spacing: 0.06em;
+            letter-spacing: 0.07em;
         }
         .metric-val {
-            font-size: 1.7rem;
-            font-weight: 800;
-            color: #111827;
-            margin-top: 0.2rem;
+            font-size: 1.85rem;
+            font-weight: 900;
+            color: #0F172A;
+            margin-top: 0.25rem;
+            letter-spacing: -0.02em;
         }
         .metric-sub {
-            font-size: 0.73rem;
-            color: #6B7280;
-            margin-top: 0.15rem;
+            font-size: 0.74rem;
+            color: #64748B;
+            margin-top: 0.18rem;
+            font-weight: 500;
         }
 
         .section-header {
-            font-size: 1.1rem;
+            font-size: 1.15rem;
             font-weight: 800;
             color: #991B1B;
-            margin-top: 0.9rem;
-            margin-bottom: 0.7rem;
+            margin-top: 1rem;
+            margin-bottom: 0.8rem;
             display: flex;
             align-items: center;
             gap: 0.5rem;
             border-bottom: 2px solid #FEE2E2;
-            padding-bottom: 0.3rem;
+            padding-bottom: 0.4rem;
+            letter-spacing: -0.01em;
         }
 
         .stDataFrame {
-            border-radius: 8px;
+            border-radius: 10px;
             overflow: hidden;
-            border: 1px solid #E5E7EB;
+            border: 1px solid #E2E8F0;
         }
         </style>
     """, unsafe_allow_html=True)
 
-    # Executive Header
+    # Executive Meeting Presentation Header
     st.markdown("""
         <div class="exec-header-box">
-            <span class="exec-badge">ChargeZone Executive Governance</span>
-            <h1 class="exec-title">Monthly Progress Report (MPR) & PM F-01 Dashboard</h1>
-            <p class="exec-subtitle">Executive Analytics Engine for Operations, Preventive Maintenance (PM) & SLA Tracking.</p>
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+                <div>
+                    <span class="exec-badge">⚡ CHARGEZONE EXECUTIVE BOARD • LIVE OPERATIONS REVIEW</span>
+                    <h1 class="exec-title">Monthly Progress Report (MPR) & PM Governance</h1>
+                    <p class="exec-subtitle">C-Suite Operations Deck: SLA Performance, Preventive Maintenance (PM F-01) & Infrastructure Analytics.</p>
+                </div>
+                <div style="text-align: right; background: rgba(255, 255, 255, 0.15); padding: 8px 18px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.3);">
+                    <div style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.09em; color: #FEE2E2; font-weight: 700;">Executive Deck</div>
+                    <div style="font-size: 1.05rem; font-weight: 900; color: #FFFFFF;">FY 2026-27 Review</div>
+                </div>
+            </div>
         </div>
     """, unsafe_allow_html=True)
 
@@ -734,9 +752,21 @@ def run_streamlit_app():
     st.sidebar.markdown("### ⚙️ Control Panel")
     st.sidebar.markdown("---")
 
-    st.sidebar.markdown("#### 1. Data Upload (2 Separate Files)")
-    issue_file = st.sidebar.file_uploader("1️⃣ Issue Tracker File (.xlsx / .csv)", type=["xlsx", "csv"], key="issue_file")
-    pm_file = st.sidebar.file_uploader("2️⃣ PM Tracker File (.xlsx / .csv)", type=["xlsx", "csv"], key="pm_file")
+    MAX_FILE_SIZE_MB = 20
+    MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+
+    st.sidebar.markdown("#### 1. Data Upload (Max 20 MB per file)")
+    issue_file = st.sidebar.file_uploader("1️⃣ Issue Tracker File (.xlsx / .csv)", type=["xlsx", "csv"], key="issue_file", help="Max allowed file size: 20 MB")
+    pm_file = st.sidebar.file_uploader("2️⃣ PM Tracker File (.xlsx / .csv)", type=["xlsx", "csv"], key="pm_file", help="Max allowed file size: 20 MB")
+
+    # Enforce 20 MB File Size Restriction
+    if issue_file is not None and issue_file.size > MAX_FILE_SIZE_BYTES:
+        st.sidebar.error(f"**Issue Tracker file exceeds 20 MB limit** ({issue_file.size / (1024*1024):.1f} MB). Please upload a file smaller than 20 MB.")
+        issue_file = None
+
+    if pm_file is not None and pm_file.size > MAX_FILE_SIZE_BYTES:
+        st.sidebar.error(f"**PM Tracker file exceeds 20 MB limit** ({pm_file.size / (1024*1024):.1f} MB). Please upload a file smaller than 20 MB.")
+        pm_file = None
 
     issue_input = None
     pm_input = None
@@ -766,11 +796,11 @@ def run_streamlit_app():
         st.sidebar.warning("⚠️ Please upload BOTH the Issue Tracker file and the PM Tracker file.")
 
     if issue_input is None or pm_input is None:
-        st.info("📌 **Upload Required**: Upload BOTH the Issue Tracker file and the PM Tracker file in the sidebar to load the dashboard.")
+        st.info("📌 **Upload Required**: Upload BOTH the Issue Tracker file and the PM Tracker file in the sidebar to load the dashboard (Max 20 MB each).")
         
-        st.markdown("### 📥 Upload Tracker Files")
+        st.markdown("### 📥 Upload Tracker Files (Max 20 MB)")
         st.markdown("""
-        #### 📂 Upload 2 Separate Files:
+        #### 📂 Upload 2 Separate Files (up to 20 MB each):
         - **File 1**: Issue Tracker Data (`.xlsx` or `.csv`) containing `Issue Tracker` sheet.
         - **File 2**: PM Tracker Data (`.xlsx` or `.csv`) containing `PM Tracker B2C- B2B` sheet.
         """)
