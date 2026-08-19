@@ -33,41 +33,63 @@ PM_QUARTER_BLOCKS = {
 PM_STATION_COLS = list(range(0, 13))
 
 
-def load_issue_tracker(wb):
-    rows = list(wb['Issue Tracker'].iter_rows(values_only=True))
-    headers = [h.strip() if isinstance(h, str) else h for h in rows[0]]
-    df = pd.DataFrame(rows[1:], columns=headers).dropna(how='all')
+def load_issue_tracker(source):
+    if isinstance(source, pd.DataFrame):
+        df = source
+    elif hasattr(source, 'name') and source.name.lower().endswith('.csv'):
+        df = pd.read_csv(source)
+    else:
+        wb = openpyxl.load_workbook(source, data_only=True) if not hasattr(source, 'sheetnames') else source
+        sheet_name = 'Issue Tracker' if 'Issue Tracker' in wb.sheetnames else wb.sheetnames[0]
+        rows = list(wb[sheet_name].iter_rows(values_only=True))
+        headers = [h.strip() if isinstance(h, str) else h for h in rows[0]]
+        df = pd.DataFrame(rows[1:], columns=headers).dropna(how='all')
+
     if 'Issue Date' in df.columns:
         df['Issue Date Parsed'] = pd.to_datetime(df['Issue Date'], errors='coerce')
     return df
 
 
-def load_pm_tracker(wb):
-    rows = list(wb['PM Tracker'].iter_rows(values_only=True))
-    row_date, row_headers = rows[3], rows[4]
-    station_fields = [row_headers[i] for i in PM_STATION_COLS]
+def load_pm_tracker(source):
+    if isinstance(source, pd.DataFrame):
+        df = source
+    elif hasattr(source, 'name') and source.name.lower().endswith('.csv'):
+        df = pd.read_csv(source)
+        # Standardize CSV column names if flat format
+        if 'Due Date' in df.columns:
+            df['Due Date Parsed'] = pd.to_datetime(df['Due Date'], errors='coerce')
+        if 'Actual Completion Date' in df.columns:
+            df['Actual Completion Date Parsed'] = pd.to_datetime(df['Actual Completion Date'], errors='coerce')
+        return df
+    else:
+        wb = openpyxl.load_workbook(source, data_only=True) if not hasattr(source, 'sheetnames') else source
+        sheet_name = 'PM Tracker' if 'PM Tracker' in wb.sheetnames else wb.sheetnames[0]
+        rows = list(wb[sheet_name].iter_rows(values_only=True))
+        row_date, row_headers = rows[3], rows[4]
+        station_fields = [row_headers[i] for i in PM_STATION_COLS]
 
-    records = []
-    for r in rows[5:]:
-        if r[0] is None and r[10] is None:
-            continue
-        station = {name: r[i] for name, i in zip(station_fields, PM_STATION_COLS)}
-        for quarter, blk in PM_QUARTER_BLOCKS.items():
-            compliance = r[blk['qcol']]
-            col = blk['start']
-            for _ in range(3):
-                records.append({
-                    **station,
-                    'Quarter': quarter,
-                    'Due Date': row_date[col],
-                    'PM Status': r[col],
-                    'F.E. Inspection': r[col + 1],
-                    'HSE Inspection': r[col + 2],
-                    'Actual Completion Date': r[col + 3],
-                    'Quarterly Compliance': compliance,
-                })
-                col += 4
-    df = pd.DataFrame(records).rename(columns={'Route ': 'Route'})
+        records = []
+        for r in rows[5:]:
+            if r[0] is None and r[10] is None:
+                continue
+            station = {name: r[i] for name, i in zip(station_fields, PM_STATION_COLS)}
+            for quarter, blk in PM_QUARTER_BLOCKS.items():
+                compliance = r[blk['qcol']]
+                col = blk['start']
+                for _ in range(3):
+                    records.append({
+                        **station,
+                        'Quarter': quarter,
+                        'Due Date': row_date[col],
+                        'PM Status': r[col],
+                        'F.E. Inspection': r[col + 1],
+                        'HSE Inspection': r[col + 2],
+                        'Actual Completion Date': r[col + 3],
+                        'Quarterly Compliance': compliance,
+                    })
+                    col += 4
+        df = pd.DataFrame(records).rename(columns={'Route ': 'Route'})
+
     if 'Due Date' in df.columns:
         df['Due Date Parsed'] = pd.to_datetime(df['Due Date'], errors='coerce')
     if 'Actual Completion Date' in df.columns:
@@ -108,7 +130,7 @@ def write_data_sheet(wb, name, df, table_name, date_cols):
 
 
 def add_pm_helper_columns(ws, pm_df, pcol, last_row):
-    due_col, done_col = pcol['Due Date'], pcol['Actual Completion Date']
+    due_col, done_col = pcol.get('Due Date', 'G'), pcol.get('Actual Completion Date', 'J')
     adv_idx = len(pm_df.columns) - (1 if 'Due Date Parsed' in pm_df.columns else 0) - (1 if 'Actual Completion Date Parsed' in pm_df.columns else 0) + 1
     adv_letter = get_column_letter(adv_idx)
     ws.cell(row=1, column=adv_idx, value='Advance PM Done').font = HEADER_FONT
@@ -120,7 +142,7 @@ def add_pm_helper_columns(ws, pm_df, pcol, last_row):
         cell.font, cell.border = CELL_FONT, BORDER
     ws.column_dimensions[adv_letter].width = 16
 
-    zme_col, station_col = pcol['ZME'], pcol['Station ID']
+    zme_col, station_col = pcol.get('ZME', 'A'), pcol.get('Station ID', 'B')
     occ_idx = adv_idx + 1
     occ_letter = get_column_letter(occ_idx)
     ws.cell(row=1, column=occ_idx, value='First Station Occurrence').font = HEADER_FONT
@@ -173,51 +195,57 @@ def build_issue_dashboard(wb, issue_df, irange):
     row = 4
     row = section_title(ws, row, '1. Issue Summary by ZME', 5)
     row = header_row(ws, row, ['ZME Name', 'Total Issues', 'Within TAT', 'Without TAT', 'TAT Efficiency'])
-    for zme in sorted(issue_df['ZME'].dropna().unique()):
-        total = f'=COUNTIFS({irange("ZME")},A{row})'
-        within = f'=COUNTIFS({irange("ZME")},A{row},{irange("TAT Compliance")},"Yes")'
-        without = f'=COUNTIFS({irange("ZME")},A{row},{irange("TAT Compliance")},"No")'
-        eff = f'=IFERROR(C{row}/B{row},0)'
-        row = data_row(ws, row, [zme, total, within, without, eff], pct_cols={4})
+    if 'ZME' in issue_df.columns:
+        for zme in sorted(issue_df['ZME'].dropna().unique()):
+            total = f'=COUNTIFS({irange("ZME")},A{row})'
+            within = f'=COUNTIFS({irange("ZME")},A{row},{irange("TAT Compliance")},"Yes")'
+            without = f'=COUNTIFS({irange("ZME")},A{row},{irange("TAT Compliance")},"No")'
+            eff = f'=IFERROR(C{row}/B{row},0)'
+            row = data_row(ws, row, [zme, total, within, without, eff], pct_cols={4})
 
     row += 1
     row = section_title(ws, row, '2. Issue Summary by Zone (CM Efficiency)', 4)
     row = header_row(ws, row, ['Zone', 'Total Issues', 'CM Efficiency (Within TAT)', 'CM Efficiency (Without TAT)'])
-    for zone in sorted(issue_df['Zone'].dropna().unique()):
-        total = f'=COUNTIFS({irange("Zone")},A{row})'
-        within = f'=IFERROR(COUNTIFS({irange("Zone")},A{row},{irange("TAT Compliance")},"Yes")/B{row},0)'
-        without = f'=IFERROR(COUNTIFS({irange("Zone")},A{row},{irange("TAT Compliance")},"No")/B{row},0)'
-        row = data_row(ws, row, [zone, total, within, without], pct_cols={2, 3})
+    if 'Zone' in issue_df.columns:
+        for zone in sorted(issue_df['Zone'].dropna().unique()):
+            total = f'=COUNTIFS({irange("Zone")},A{row})'
+            within = f'=IFERROR(COUNTIFS({irange("Zone")},A{row},{irange("TAT Compliance")},"Yes")/B{row},0)'
+            without = f'=IFERROR(COUNTIFS({irange("Zone")},A{row},{irange("TAT Compliance")},"No")/B{row},0)'
+            row = data_row(ws, row, [zone, total, within, without], pct_cols={2, 3})
 
     row += 1
     row = section_title(ws, row, '3. Repetitive Faults (same Station ID + Issue Sub-Type, 2+ occurrences)', 3)
     row = header_row(ws, row, ['Station ID', 'Issue Sub-Type', 'Occurrences'])
-    pair_counts = issue_df.groupby(['Station ID', 'Issue Sub-Type']).size()
-    repeats = pair_counts[pair_counts >= 2].index.tolist()
-    if repeats:
-        for station_id, subtype in repeats:
-            cnt = f'=COUNTIFS({irange("Station ID")},A{row},{irange("Issue Sub-Type")},B{row})'
-            row = data_row(ws, row, [station_id, subtype, cnt])
-    else:
-        row = data_row(ws, row, ['None found in current data', '', ''])
+    if 'Station ID' in issue_df.columns and 'Issue Sub-Type' in issue_df.columns:
+        pair_counts = issue_df.groupby(['Station ID', 'Issue Sub-Type']).size()
+        repeats = pair_counts[pair_counts >= 2].index.tolist()
+        if repeats:
+            for station_id, subtype in repeats:
+                cnt = f'=COUNTIFS({irange("Station ID")},A{row},{irange("Issue Sub-Type")},B{row})'
+                row = data_row(ws, row, [station_id, subtype, cnt])
+        else:
+            row = data_row(ws, row, ['None found in current data', '', ''])
 
     row += 1
     row = section_title(ws, row, '4. Status Breakdown', 2)
     row = header_row(ws, row, ['Status', 'Count'])
-    for status in sorted(issue_df['Status'].dropna().unique()):
-        row = data_row(ws, row, [status, f'=COUNTIFS({irange("Status")},A{row})'])
+    if 'Status' in issue_df.columns:
+        for status in sorted(issue_df['Status'].dropna().unique()):
+            row = data_row(ws, row, [status, f'=COUNTIFS({irange("Status")},A{row})'])
 
     row += 1
     row = section_title(ws, row, '5. Severity Breakdown', 2)
     row = header_row(ws, row, ['Severity', 'Count'])
-    for sev in sorted(issue_df['Severity'].dropna().unique()):
-        row = data_row(ws, row, [sev, f'=COUNTIFS({irange("Severity")},A{row})'])
+    if 'Severity' in issue_df.columns:
+        for sev in sorted(issue_df['Severity'].dropna().unique()):
+            row = data_row(ws, row, [sev, f'=COUNTIFS({irange("Severity")},A{row})'])
 
     row += 1
     row = section_title(ws, row, '6. Customer Filter (B2B / B2C)', 2)
     row = header_row(ws, row, ['Segment', 'Count'])
-    for seg in sorted(issue_df['B2B/ B2C'].dropna().unique()):
-        row = data_row(ws, row, [seg, f'=COUNTIFS({irange("B2B/ B2C")},A{row})'])
+    if 'B2B/ B2C' in issue_df.columns:
+        for seg in sorted(issue_df['B2B/ B2C'].dropna().unique()):
+            row = data_row(ws, row, [seg, f'=COUNTIFS({irange("B2B/ B2C")},A{row})'])
 
     row += 1
     ws.cell(row=row, column=1,
@@ -242,30 +270,34 @@ def build_pm_dashboard(wb, pm_df, prange):
     ws.merge_cells('A2:J2')
 
     row = 4
-    zme_zone_pairs = pm_df[['ZME', 'Zone']].drop_duplicates().sort_values(['Zone', 'ZME']).values.tolist()
-    row = section_title(ws, row, 'PM Summary by ZME', 9)
-    row = header_row(ws, row, ['ZME Name', 'Zone', 'Total Chargers', 'Total Stations', 'PM Planning',
-                                'PM Done', 'PM Pending', 'Advance PM Done', 'PM Efficiency'])
-    for zme, zone in zme_zone_pairs:
-        total_chargers = f'=COUNTIFS({prange("ZME")},A{row},{prange("Due Date")},DATE(2026,4,1))'
-        total_stations = (f'=SUMIFS({prange("First Station Occurrence")},{prange("ZME")},A{row},'
-                           f'{prange("Due Date")},DATE(2026,4,1))')
-        pm_planning = f'=COUNTIFS({prange("ZME")},A{row},{prange("PM Status")},"<>")'
-        pm_done = f'=COUNTIFS({prange("ZME")},A{row},{prange("PM Status")},"Yes")'
-        pm_pending = f'=E{row}-F{row}'
-        advance_done = f'=COUNTIFS({prange("ZME")},A{row},{prange("Advance PM Done")},"Yes")'
-        pm_eff = f'=IFERROR(F{row}/E{row},0)'
-        row = data_row(ws, row, [zme, zone, total_chargers, total_stations, pm_planning, pm_done,
-                                  pm_pending, advance_done, pm_eff], pct_cols={8})
+    if 'ZME' in pm_df.columns and 'Zone' in pm_df.columns:
+        zme_zone_pairs = pm_df[['ZME', 'Zone']].drop_duplicates().sort_values(['Zone', 'ZME']).values.tolist()
+        row = section_title(ws, row, 'PM Summary by ZME', 9)
+        row = header_row(ws, row, ['ZME Name', 'Zone', 'Total Chargers', 'Total Stations', 'PM Planning',
+                                    'PM Done', 'PM Pending', 'Advance PM Done', 'PM Efficiency'])
+        for zme, zone in zme_zone_pairs:
+            total_chargers = f'=COUNTIFS({prange("ZME")},A{row},{prange("Due Date")},DATE(2026,4,1))'
+            total_stations = (f'=SUMIFS({prange("First Station Occurrence")},{prange("ZME")},A{row},'
+                               f'{prange("Due Date")},DATE(2026,4,1))')
+            pm_planning = f'=COUNTIFS({prange("ZME")},A{row},{prange("PM Status")},"<>")'
+            pm_done = f'=COUNTIFS({prange("ZME")},A{row},{prange("PM Status")},"Yes")'
+            pm_pending = f'=E{row}-F{row}'
+            advance_done = f'=COUNTIFS({prange("ZME")},A{row},{prange("Advance PM Done")},"Yes")'
+            pm_eff = f'=IFERROR(F{row}/E{row},0)'
+            row = data_row(ws, row, [zme, zone, total_chargers, total_stations, pm_planning, pm_done,
+                                      pm_pending, advance_done, pm_eff], pct_cols={8})
 
     for col, width in zip('ABCDEFGHIJ', [18, 10, 14, 14, 13, 11, 12, 16, 14, 10]):
         ws.column_dimensions[col].width = width
 
 
-def generate_workbook(source_input):
-    src = openpyxl.load_workbook(source_input, data_only=True)
-    issue_df = load_issue_tracker(src)
-    pm_df = load_pm_tracker(src)
+def generate_workbook(source_input_or_issue, pm_input=None):
+    if pm_input is None:
+        issue_df = load_issue_tracker(source_input_or_issue)
+        pm_df = load_pm_tracker(source_input_or_issue)
+    else:
+        issue_df = load_issue_tracker(source_input_or_issue)
+        pm_df = load_pm_tracker(pm_input)
 
     wb = Workbook()
     wb.remove(wb.active)
@@ -286,10 +318,12 @@ def generate_workbook(source_input):
                  for i, name in enumerate(list(clean_pm_cols) + ['Advance PM Done', 'First Station Occurrence'])}
 
     def irange(col):
-        return f"'Issue Data'!${icol[col]}$2:${icol[col]}${ISSUE_RANGE_END}"
+        col_letter = icol.get(col, 'A')
+        return f"'Issue Data'!${col_letter}$2:${col_letter}${ISSUE_RANGE_END}"
 
     def prange(col):
-        return f"'PM Data'!${pcol_full[col]}$2:${pcol_full[col]}${PM_RANGE_END}"
+        col_letter = pcol_full.get(col, 'A')
+        return f"'PM Data'!${col_letter}$2:${col_letter}${PM_RANGE_END}"
 
     build_issue_dashboard(wb, issue_df, irange)
     build_pm_dashboard(wb, pm_df, prange)
@@ -419,40 +453,76 @@ def run_streamlit_app():
     st.sidebar.markdown("### ⚙️ Control Panel")
     st.sidebar.markdown("---")
 
-    st.sidebar.markdown("#### 1. Data Source")
-    uploaded_file = st.sidebar.file_uploader("Upload Tracker Workbook (.xlsx)", type=["xlsx"])
+    st.sidebar.markdown("#### 1. Data Upload Option")
+    upload_mode = st.sidebar.radio(
+        "Select Upload Method:",
+        ["📁 Single Merged File (1 Workbook)", "📂 Two Separate Files (Issue & PM)"],
+        index=1  # Default to 2 Separate Files or Single Merged
+    )
 
-    use_default = False
-    default_path = "issue,pm tracker merged.xlsx"
-    if uploaded_file is None:
-        try:
-            import os
-            if os.path.exists(default_path):
-                use_default = st.sidebar.checkbox("Load Sample Dataset (`issue,pm tracker merged.xlsx`)", value=True)
-        except Exception:
-            pass
+    issue_input = None
+    pm_input = None
+    file_status_text = ""
 
-    source_input = None
-    file_name = None
+    if upload_mode == "📁 Single Merged File (1 Workbook)":
+        uploaded_file = st.sidebar.file_uploader("Upload Merged Tracker File (.xlsx)", type=["xlsx", "csv"], key="single_file")
+        use_default = False
+        default_path = "issue,pm tracker merged.xlsx"
+        
+        if uploaded_file is None:
+            try:
+                import os
+                if os.path.exists(default_path):
+                    use_default = st.sidebar.checkbox("Load Sample Dataset (`issue,pm tracker merged.xlsx`)", value=True)
+            except Exception:
+                pass
 
-    if uploaded_file is not None:
-        source_input = uploaded_file
-        file_name = uploaded_file.name
-    elif use_default:
-        source_input = default_path
-        file_name = default_path
+        if uploaded_file is not None:
+            issue_input = uploaded_file
+            file_status_text = f"✓ Connected Merged File: `{uploaded_file.name}`"
+        elif use_default:
+            issue_input = default_path
+            file_status_text = f"✓ Connected Sample: `{default_path}`"
 
-    if source_input is None:
-        st.info("📌 **Action Required**: Please upload an Operational Tracker Workbook (`.xlsx`) containing `Issue Tracker` and `PM Tracker` worksheets.")
+    else:
+        st.sidebar.markdown("**Upload 2 Separate Files:**")
+        issue_file = st.sidebar.file_uploader("1️⃣ Issue Tracker File (.xlsx / .csv)", type=["xlsx", "csv"], key="issue_file")
+        pm_file = st.sidebar.file_uploader("2️⃣ PM Tracker File (.xlsx / .csv)", type=["xlsx", "csv"], key="pm_file")
+
+        if issue_file is not None and pm_file is not None:
+            issue_input = issue_file
+            pm_input = pm_file
+            file_status_text = f"✓ Connected Issue: `{issue_file.name}` & PM: `{pm_file.name}`"
+        elif issue_file is not None or pm_file is not None:
+            st.sidebar.warning("⚠️ Please upload BOTH the Issue Tracker file and the PM Tracker file.")
+
+    if issue_input is None:
+        st.info("📌 **Upload Required**: Select your upload mode in the sidebar (Single Merged File or 2 Separate Files) and upload your tracker data to load the dashboard.")
+        
+        st.markdown("### 📥 Upload Tracker Files")
+        st.markdown("Choose your upload preference from the **Control Panel sidebar** on the left:")
+        
+        c_mode1, c_mode2 = st.columns(2)
+        with c_mode1:
+            st.markdown("""
+            #### 📂 Option A: Upload 2 Separate Files
+            - **File 1**: Issue Tracker Data (`.xlsx` or `.csv`)
+            - **File 2**: PM Tracker Data (`.xlsx` or `.csv`)
+            """)
+        with c_mode2:
+            st.markdown("""
+            #### 📁 Option B: Upload 1 Single Merged File
+            - Single Excel workbook (`.xlsx`) containing both `Issue Tracker` & `PM Tracker` worksheets.
+            """)
         return
 
-    st.sidebar.success(f"✓ Connected: `{file_name}`")
+    st.sidebar.success(file_status_text)
     st.sidebar.markdown("---")
 
     # Processing Workbook
-    with st.spinner("Processing Operational Engine..."):
+    with st.spinner("Processing Operational Data Engine..."):
         try:
-            wb, raw_issue_df, raw_pm_df = generate_workbook(source_input)
+            wb, raw_issue_df, raw_pm_df = generate_workbook(issue_input, pm_input)
             output_buffer = io.BytesIO()
             wb.save(output_buffer)
             output_buffer.seek(0)
@@ -528,7 +598,7 @@ def run_streamlit_app():
         without_tat = len(filtered_issue_df[filtered_issue_df['TAT Compliance'].astype(str).str.upper() == 'NO']) if 'TAT Compliance' in filtered_issue_df.columns else 0
         tat_eff = (within_tat / total_issues * 100) if total_issues > 0 else 0.0
 
-        # KPI Summary Cards (Items 2, 3, 4, 5)
+        # KPI Summary Cards
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             st.markdown(f"""
@@ -567,7 +637,7 @@ def run_streamlit_app():
 
         col_zme, col_zone = st.columns([6, 6])
 
-        # 1. ZME Name Summary (Items 1, 2, 3, 4, 5)
+        # 1. ZME Name Summary
         with col_zme:
             st.markdown('<div class="section-header">1. Issue Summary by ZME Name</div>', unsafe_allow_html=True)
             if 'ZME' in filtered_issue_df.columns and 'TAT Compliance' in filtered_issue_df.columns:
@@ -590,7 +660,7 @@ def run_streamlit_app():
                     height=300
                 )
 
-        # 2. Zone Summary & CM Efficiency (Items 6, 7, 8, 9)
+        # 2. Zone Summary & CM Efficiency
         with col_zone:
             st.markdown('<div class="section-header">2. Issue Summary by Zone (CM Efficiency)</div>', unsafe_allow_html=True)
             if 'Zone' in filtered_issue_df.columns and 'TAT Compliance' in filtered_issue_df.columns:
@@ -615,11 +685,10 @@ def run_streamlit_app():
 
         st.markdown("---")
 
-        # 3. Repetitive Faults (Item 10)
+        # 3. Repetitive Faults
         st.markdown('<div class="section-header">3. Repetitive Faults (Top Issue Type & Sub-Type)</div>', unsafe_allow_html=True)
         st.caption("Stations with multiple occurrences (≥ 2) for identical Issue Sub-Types.")
 
-        rep_cols = [c for c in ['Station ID', 'Issue Type', 'Issue Sub-Type'] if c in filtered_issue_df.columns]
         if 'Station ID' in filtered_issue_df.columns and 'Issue Sub-Type' in filtered_issue_df.columns:
             group_cols = ['Station ID']
             if 'Issue Type' in filtered_issue_df.columns:
@@ -641,7 +710,7 @@ def run_streamlit_app():
 
         col_stat, col_sev, col_cust = st.columns(3)
 
-        # 4. Status Breakdown (Item 11)
+        # 4. Status Breakdown
         with col_stat:
             st.markdown('<div class="section-header">4. Status Breakdown</div>', unsafe_allow_html=True)
             if 'Status' in filtered_issue_df.columns:
@@ -650,7 +719,7 @@ def run_streamlit_app():
                 st.dataframe(status_counts, use_container_width=True)
                 st.bar_chart(status_counts.set_index('Status'), color="#2563EB", height=200)
 
-        # 5. Severity Breakdown (Item 12)
+        # 5. Severity Breakdown
         with col_sev:
             st.markdown('<div class="section-header">5. Severity Breakdown</div>', unsafe_allow_html=True)
             if 'Severity' in filtered_issue_df.columns:
@@ -659,7 +728,7 @@ def run_streamlit_app():
                 st.dataframe(sev_counts, use_container_width=True)
                 st.bar_chart(sev_counts.set_index('Severity'), color="#EF4444", height=200)
 
-        # 6. Customer Filter Segment (Item 13)
+        # 6. Customer Filter Segment
         with col_cust:
             st.markdown('<div class="section-header">6. Customer Segment (B2B / B2C)</div>', unsafe_allow_html=True)
             if 'B2B/ B2C' in filtered_issue_df.columns:
@@ -699,7 +768,7 @@ def run_streamlit_app():
         total_chargers = len(pm_df['Charger ID'].dropna().unique()) if 'Charger ID' in pm_df.columns else len(pm_df)
         total_stations = len(pm_df['Station ID'].dropna().unique()) if 'Station ID' in pm_df.columns else len(pm_df)
 
-        # PM KPI Cards Row (Items 2, 3, 5, 6, 7, 8, 9)
+        # PM KPI Cards Row
         p1, p2, p3, p4, p5 = st.columns(5)
         with p1:
             st.markdown(f"""
@@ -744,7 +813,7 @@ def run_streamlit_app():
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # PM Summary by ZME Table (Items 1 to 9)
+        # PM Summary by ZME Table
         st.markdown('<div class="section-header">⚙️ PM F-01 Detailed Summary by ZME Name</div>', unsafe_allow_html=True)
 
         if 'ZME' in pm_df.columns and 'PM Status' in pm_df.columns:
@@ -815,10 +884,18 @@ def run_streamlit_app():
 if __name__ == '__main__':
     # CLI execution support
     if len(sys.argv) >= 2 and not sys.argv[1].startswith('-'):
-        src_path = sys.argv[1]
-        out_path = sys.argv[2] if len(sys.argv) > 2 else f"MPR_Report_{datetime.now():%Y-%m}.xlsx"
-        wb, _, _ = generate_workbook(src_path)
-        wb.save(out_path)
-        print(f'Written: {out_path}')
+        if len(sys.argv) == 2 or (len(sys.argv) >= 3 and sys.argv[2].endswith('.xlsx') and not sys.argv[1].endswith('.xlsx')):
+            src_path = sys.argv[1]
+            out_path = sys.argv[2] if len(sys.argv) > 2 else f"MPR_Report_{datetime.now():%Y-%m}.xlsx"
+            wb, _, _ = generate_workbook(src_path)
+            wb.save(out_path)
+            print(f'Written: {out_path}')
+        else:
+            issue_path = sys.argv[1]
+            pm_path = sys.argv[2]
+            out_path = sys.argv[3] if len(sys.argv) > 3 else f"MPR_Report_{datetime.now():%Y-%m}.xlsx"
+            wb, _, _ = generate_workbook(issue_path, pm_path)
+            wb.save(out_path)
+            print(f'Written: {out_path}')
     else:
         run_streamlit_app()
