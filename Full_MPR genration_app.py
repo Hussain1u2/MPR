@@ -96,19 +96,39 @@ def make_unique_headers(headers):
     return unique_headers
 
 
+def ensure_unique_columns(df):
+    """Ensure DataFrame columns are strictly unique string values."""
+    if df is None or df.empty:
+        return df
+    seen = {}
+    new_cols = []
+    for idx, c in enumerate(df.columns):
+        c_str = str(c).strip() if (c is not None and str(c).strip()) else f"Unnamed_{idx+1}"
+        if c_str in seen:
+            seen[c_str] += 1
+            new_cols.append(f"{c_str}_{seen[c_str]}")
+        else:
+            seen[c_str] = 0
+            new_cols.append(c_str)
+    df.columns = new_cols
+    return df
+
+
 def load_issue_tracker(source):
     preferred_sheets = ['Issue Tracker', 'Issue Data']
     if isinstance(source, pd.DataFrame):
-        df = source
+        df = source.copy()
     elif isinstance(source, bytes):
         if source.startswith(b'PK\x03\x04'):
             source_stream = io.BytesIO(source)
-            wb = openpyxl.load_workbook(source_stream, data_only=True)
+            wb = openpyxl.load_workbook(source_stream, data_only=True, read_only=True)
             sheet_name = select_sheet_name(wb.sheetnames, preferred_sheets, 'issue')
-            rows = list(wb[sheet_name].iter_rows(values_only=True))
+            ws = wb[sheet_name]
+            rows = [tuple(cell for cell in row) for row in ws.iter_rows(values_only=True)]
+            wb.close()
             if not rows:
                 return pd.DataFrame()
-            headers = make_unique_headers([h.strip() if isinstance(h, str) else h for h in rows[0] if h is not None])
+            headers = make_unique_headers([str(h).strip() if h is not None else f"Unnamed_{i+1}" for i, h in enumerate(rows[0])])
             df = pd.DataFrame([r[:len(headers)] for r in rows[1:]], columns=headers).dropna(how='all')
         else:
             df = pd.read_csv(io.BytesIO(source))
@@ -117,18 +137,22 @@ def load_issue_tracker(source):
     else:
         if not hasattr(source, 'sheetnames'):
             if isinstance(source, (str, io.BytesIO)):
-                wb = openpyxl.load_workbook(source, data_only=True)
+                wb = openpyxl.load_workbook(source, data_only=True, read_only=True)
             else:
-                wb = openpyxl.load_workbook(io.BytesIO(source.read()), data_only=True)
+                wb = openpyxl.load_workbook(io.BytesIO(source.read()), data_only=True, read_only=True)
         else:
             wb = source
         sheet_name = select_sheet_name(wb.sheetnames, preferred_sheets, 'issue')
-        rows = list(wb[sheet_name].iter_rows(values_only=True))
+        ws = wb[sheet_name]
+        rows = [tuple(cell for cell in row) for row in ws.iter_rows(values_only=True)]
+        if hasattr(wb, 'close'):
+            wb.close()
         if not rows:
             return pd.DataFrame()
-        headers = make_unique_headers([h.strip() if isinstance(h, str) else h for h in rows[0] if h is not None])
+        headers = make_unique_headers([str(h).strip() if h is not None else f"Unnamed_{i+1}" for i, h in enumerate(rows[0])])
         df = pd.DataFrame([r[:len(headers)] for r in rows[1:]], columns=headers).dropna(how='all')
 
+    df = ensure_unique_columns(df)
     if 'Issue Date' in df.columns:
         df['Issue Date Parsed'] = pd.to_datetime(df['Issue Date'], errors='coerce')
     return df
@@ -137,20 +161,23 @@ def load_issue_tracker(source):
 def load_pm_tracker(source):
     preferred_sheets = ['PM Tracker B2C- B2B', 'PM Tracker B2C-B2B', 'PM Tracker B2C - B2B', 'PM Tracker', 'PM Data']
     if isinstance(source, pd.DataFrame):
-        df = source
+        df = source.copy()
     elif isinstance(source, bytes):
         if source.startswith(b'PK\x03\x04'):
             source_stream = io.BytesIO(source)
-            wb = openpyxl.load_workbook(source_stream, data_only=True)
+            wb = openpyxl.load_workbook(source_stream, data_only=True, read_only=True)
         else:
             df = pd.read_csv(io.BytesIO(source))
+            df = ensure_unique_columns(df)
             if 'Due Date' in df.columns:
                 df['Due Date Parsed'] = pd.to_datetime(df['Due Date'], errors='coerce')
             if 'Actual Completion Date' in df.columns:
                 df['Actual Completion Date Parsed'] = pd.to_datetime(df['Actual Completion Date'], errors='coerce')
             return df
         sheet_name = select_sheet_name(wb.sheetnames, preferred_sheets, 'pm')
-        rows = list(wb[sheet_name].iter_rows(values_only=True))
+        ws = wb[sheet_name]
+        rows = [tuple(cell for cell in row) for row in ws.iter_rows(values_only=True)]
+        wb.close()
         if not rows:
             return pd.DataFrame()
 
@@ -158,7 +185,7 @@ def load_pm_tracker(source):
         is_flat_table = any(k in first_row_str for k in ['zme', 'station id', 'charger id', 'pm status', 'due date']) or len(rows) <= 5
 
         if is_flat_table:
-            headers = make_unique_headers([h.strip() if isinstance(h, str) else h for h in rows[0] if h is not None])
+            headers = make_unique_headers([str(h).strip() if h is not None else f"Unnamed_{i+1}" for i, h in enumerate(rows[0])])
             df = pd.DataFrame([r[:len(headers)] for r in rows[1:]], columns=headers).dropna(how='all')
         else:
             row_date = rows[3] if len(rows) > 3 else ()
@@ -191,13 +218,16 @@ def load_pm_tracker(source):
     else:
         if not hasattr(source, 'sheetnames'):
             if isinstance(source, (str, io.BytesIO)):
-                wb = openpyxl.load_workbook(source, data_only=True)
+                wb = openpyxl.load_workbook(source, data_only=True, read_only=True)
             else:
-                wb = openpyxl.load_workbook(io.BytesIO(source.read()), data_only=True)
+                wb = openpyxl.load_workbook(io.BytesIO(source.read()), data_only=True, read_only=True)
         else:
             wb = source
         sheet_name = select_sheet_name(wb.sheetnames, preferred_sheets, 'pm')
-        rows = list(wb[sheet_name].iter_rows(values_only=True))
+        ws = wb[sheet_name]
+        rows = [tuple(cell for cell in row) for row in ws.iter_rows(values_only=True)]
+        if hasattr(wb, 'close'):
+            wb.close()
         if not rows:
             return pd.DataFrame()
 
@@ -205,7 +235,7 @@ def load_pm_tracker(source):
         is_flat_table = any(k in first_row_str for k in ['zme', 'station id', 'charger id', 'pm status', 'due date']) or len(rows) <= 5
 
         if is_flat_table:
-            headers = make_unique_headers([h.strip() if isinstance(h, str) else h for h in rows[0] if h is not None])
+            headers = make_unique_headers([str(h).strip() if h is not None else f"Unnamed_{i+1}" for i, h in enumerate(rows[0])])
             df = pd.DataFrame([r[:len(headers)] for r in rows[1:]], columns=headers).dropna(how='all')
         else:
             row_date = rows[3] if len(rows) > 3 else ()
@@ -234,6 +264,7 @@ def load_pm_tracker(source):
                         col += 4
             df = pd.DataFrame(records).rename(columns={'Route ': 'Route'})
 
+    df = ensure_unique_columns(df)
     if 'Due Date' in df.columns:
         df['Due Date Parsed'] = pd.to_datetime(df['Due Date'], errors='coerce')
     if 'Actual Completion Date' in df.columns:
@@ -1240,9 +1271,11 @@ def run_streamlit_app():
         data_choice = st.radio("Select Sheet:", ["Issue Tracker Master Data", "PM Tracker Master Data"], horizontal=True)
 
         if data_choice == "Issue Tracker Master Data":
-            st.dataframe(raw_issue_df.drop(columns=[c for c in ['Issue Date Parsed', 'Due Date Parsed', 'Actual Completion Date Parsed'] if c in raw_issue_df.columns]), use_container_width=True)
+            df_disp = ensure_unique_columns(raw_issue_df.drop(columns=[c for c in ['Issue Date Parsed', 'Due Date Parsed', 'Actual Completion Date Parsed'] if c in raw_issue_df.columns]))
+            st.dataframe(df_disp, use_container_width=True)
         else:
-            st.dataframe(raw_pm_df.drop(columns=[c for c in ['Issue Date Parsed', 'Due Date Parsed', 'Actual Completion Date Parsed'] if c in raw_pm_df.columns]), use_container_width=True)
+            df_disp = ensure_unique_columns(raw_pm_df.drop(columns=[c for c in ['Issue Date Parsed', 'Due Date Parsed', 'Actual Completion Date Parsed'] if c in raw_pm_df.columns]))
+            st.dataframe(df_disp, use_container_width=True)
 
 
 if __name__ == '__main__':
