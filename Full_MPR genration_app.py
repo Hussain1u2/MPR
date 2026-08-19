@@ -16,14 +16,14 @@ HAS_PLOTLY = True
 
 # Styling constants for OpenPyXL excel generation
 FONT = 'Arial'
-HEADER_FILL = PatternFill('solid', fgColor='991B1B')
+HEADER_FILL = PatternFill('solid', fgColor='1E3A8A')
 HEADER_FONT = Font(name=FONT, size=10, bold=True, color='FFFFFF')
-TITLE_FONT = Font(name=FONT, size=14, bold=True, color='991B1B')
-SECTION_FONT = Font(name=FONT, size=11, bold=True, color='991B1B')
-NOTE_FONT = Font(name=FONT, size=9, italic=True, color='6B7280')
+TITLE_FONT = Font(name=FONT, size=14, bold=True, color='1E3A8A')
+SECTION_FONT = Font(name=FONT, size=11, bold=True, color='1E3A8A')
+NOTE_FONT = Font(name=FONT, size=9, italic=True, color='64748B')
 CELL_FONT = Font(name=FONT, size=10)
 BOLD_CELL = Font(name=FONT, size=10, bold=True)
-BORDER = Border(*(Side(style='thin', color='E5E7EB'),) * 4)
+BORDER = Border(*(Side(style='thin', color='E2E8F0'),) * 4)
 DATE_FMT = 'dd-mmm-yy'
 PCT_FMT = '0.0%'
 ISSUE_RANGE_END = 5000
@@ -487,13 +487,13 @@ def plot_pie_chart(labels, values, title, colors=None, hole=0.45):
             labels=labels,
             values=values,
             hole=hole,
-            marker_colors=colors if colors else ['#DC2626', '#991B1B', '#16A34A', '#F59E0B', '#475569'],
+            marker_colors=colors if colors else ['#10B981', '#EF4444', '#2563EB', '#F59E0B', '#64748B'],
             textinfo='percent+value',
             hoverinfo='label+percent+value',
             insidetextfont=dict(color='#FFFFFF', size=13, family='Inter')
         )])
         fig.update_layout(
-            title=dict(text=title, font=dict(size=14, color='#111827', family='Inter', weight='bold')),
+            title=dict(text=title, font=dict(size=14, color='#0F172A', family='Inter', weight='bold')),
             margin=dict(l=15, r=15, t=45, b=15),
             height=300,
             showlegend=True,
@@ -506,7 +506,7 @@ def plot_pie_chart(labels, values, title, colors=None, hole=0.45):
         st.dataframe(df_pie, use_container_width=True)
 
 
-def plot_vertical_bar(df, x_col, y_col, title, color_hex="#DC2626"):
+def plot_vertical_bar(df, x_col, y_col, title, color_hex="#2563EB"):
     """Renders a clean vertical bar chart with exact value labels."""
     if HAS_PLOTLY:
         fig = px.bar(
@@ -521,11 +521,11 @@ def plot_vertical_bar(df, x_col, y_col, title, color_hex="#DC2626"):
         fig.update_layout(
             margin=dict(l=15, r=15, t=45, b=15),
             height=320,
-            font=dict(family='Inter', color='#111827'),
+            font=dict(family='Inter', color='#0F172A'),
             xaxis_title=x_col,
             yaxis_title=y_col,
             plot_bgcolor='rgba(0,0,0,0)',
-            yaxis=dict(showgrid=True, gridcolor='#F3F4F6')
+            yaxis=dict(showgrid=True, gridcolor='#F1F5F9')
         )
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'responsive': True})
     else:
@@ -537,7 +537,7 @@ def plot_grouped_bar(df, x_col, y_cols, title, colors=None):
     """Renders a responsive multi-series grouped column chart."""
     if HAS_PLOTLY:
         fig = go.Figure()
-        palette = colors if colors else ['#DC2626', '#991B1B', '#16A34A', '#F59E0B']
+        palette = colors if colors else ['#2563EB', '#10B981', '#EF4444', '#F59E0B']
         for idx, col in enumerate(y_cols):
             fig.add_trace(go.Bar(
                 name=col,
@@ -550,12 +550,12 @@ def plot_grouped_bar(df, x_col, y_cols, title, colors=None):
             ))
         fig.update_layout(
             barmode='group',
-            title=dict(text=title, font=dict(size=14, color='#111827', family='Inter', weight='bold')),
+            title=dict(text=title, font=dict(size=14, color='#0F172A', family='Inter', weight='bold')),
             margin=dict(l=15, r=15, t=45, b=15),
             height=320,
             legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
             plot_bgcolor='rgba(0,0,0,0)',
-            yaxis=dict(showgrid=True, gridcolor='#F3F4F6')
+            yaxis=dict(showgrid=True, gridcolor='#F1F5F9')
         )
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'responsive': True})
     else:
@@ -571,7 +571,7 @@ def run_streamlit_app():
         initial_sidebar_state="expanded"
     )
 
-    # Executive Office Meeting Presentation Styling - White Background & High-Contrast Red Theme
+    # Executive Corporate Navy & Electric Blue Presentation Styling
     st.markdown("""
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
@@ -592,26 +592,26 @@ def run_streamlit_app():
             color: #0F172A;
         }
 
-        /* Executive Red Buttons with Glow */
+        /* Executive Corporate Navy & Blue Buttons */
         .stButton > button, div[data-testid="stDownloadButton"] > button {
-            background: linear-gradient(135deg, #991B1B 0%, #DC2626 100%) !important;
+            background: linear-gradient(135deg, #1E3A8A 0%, #2563EB 100%) !important;
             color: #FFFFFF !important;
             border-radius: 8px !important;
             font-weight: 800 !important;
             font-size: 0.95rem !important;
             border: none !important;
             padding: 0.65rem 1.4rem !important;
-            box-shadow: 0 4px 14px rgba(185, 28, 28, 0.3) !important;
+            box-shadow: 0 4px 14px rgba(37, 99, 235, 0.28) !important;
             transition: all 0.2s ease !important;
             letter-spacing: 0.02em !important;
         }
         .stButton > button:hover, div[data-testid="stDownloadButton"] > button:hover {
-            background: linear-gradient(135deg, #7F1D1D 0%, #B91C1C 100%) !important;
-            box-shadow: 0 6px 20px rgba(153, 27, 27, 0.45) !important;
+            background: linear-gradient(135deg, #1D4ED8 0%, #1E40AF 100%) !important;
+            box-shadow: 0 6px 20px rgba(37, 99, 235, 0.42) !important;
             transform: translateY(-1px) !important;
         }
 
-        /* Streamlit Tabs Red Accent for Meetings */
+        /* Streamlit Tabs Accent */
         button[data-baseweb="tab"] {
             font-weight: 800 !important;
             color: #475569 !important;
@@ -619,27 +619,27 @@ def run_streamlit_app():
             padding: 0.75rem 1.25rem !important;
         }
         button[data-baseweb="tab"][aria-selected="true"] {
-            color: #991B1B !important;
-            border-bottom-color: #DC2626 !important;
+            color: #1E3A8A !important;
+            border-bottom-color: #2563EB !important;
         }
         div[data-baseweb="tab-highlight"] {
-            background-color: #DC2626 !important;
+            background-color: #2563EB !important;
             height: 3px !important;
         }
 
-        /* Meeting Header Box */
+        /* Meeting Header Box - Deep Corporate Navy to Electric Blue */
         .exec-header-box {
-            background: linear-gradient(135deg, #7F1D1D 0%, #B91C1C 45%, #DC2626 100%);
+            background: linear-gradient(135deg, #0F172A 0%, #1E3A8A 50%, #2563EB 100%);
             padding: 1.5rem 2.2rem;
             border-radius: 14px;
             color: #FFFFFF;
-            box-shadow: 0 12px 30px rgba(185, 28, 28, 0.22);
+            box-shadow: 0 12px 30px rgba(30, 58, 138, 0.25);
             margin-bottom: 1.5rem;
-            border-left: 8px solid #991B1B;
+            border-left: 8px solid #2563EB;
         }
 
         .exec-badge {
-            background-color: rgba(255, 255, 255, 0.22);
+            background-color: rgba(255, 255, 255, 0.16);
             color: #FFFFFF;
             font-size: 0.73rem;
             font-weight: 800;
@@ -649,7 +649,7 @@ def run_streamlit_app():
             text-transform: uppercase;
             display: inline-block;
             margin-bottom: 0.5rem;
-            border: 1px solid rgba(255, 255, 255, 0.4);
+            border: 1px solid rgba(255, 255, 255, 0.35);
             backdrop-filter: blur(4px);
         }
 
@@ -664,7 +664,7 @@ def run_streamlit_app():
 
         .exec-subtitle {
             font-size: 0.95rem;
-            color: #FEE2E2;
+            color: #BFDBFE;
             margin-top: 0.35rem;
             margin-bottom: 0;
             font-weight: 500;
@@ -681,12 +681,13 @@ def run_streamlit_app():
         }
         .metric-card:hover {
             transform: translateY(-3px);
-            box-shadow: 0 8px 24px rgba(220, 38, 38, 0.12);
+            box-shadow: 0 8px 24px rgba(37, 99, 235, 0.12);
         }
-        .metric-card.red { border-top: 5px solid #DC2626; }
-        .metric-card.darkred { border-top: 5px solid #991B1B; }
-        .metric-card.green { border-top: 5px solid #15803D; }
-        .metric-card.amber { border-top: 5px solid #D97706; }
+        .metric-card.navy { border-top: 5px solid #1E3A8A; }
+        .metric-card.blue { border-top: 5px solid #2563EB; }
+        .metric-card.green { border-top: 5px solid #10B981; }
+        .metric-card.red { border-top: 5px solid #EF4444; }
+        .metric-card.amber { border-top: 5px solid #F59E0B; }
 
         .metric-label {
             font-size: 0.74rem;
@@ -712,13 +713,13 @@ def run_streamlit_app():
         .section-header {
             font-size: 1.15rem;
             font-weight: 800;
-            color: #991B1B;
+            color: #1E3A8A;
             margin-top: 1rem;
             margin-bottom: 0.8rem;
             display: flex;
             align-items: center;
             gap: 0.5rem;
-            border-bottom: 2px solid #FEE2E2;
+            border-bottom: 2px solid #DBEAFE;
             padding-bottom: 0.4rem;
             letter-spacing: -0.01em;
         }
@@ -741,7 +742,7 @@ def run_streamlit_app():
                     <p class="exec-subtitle">C-Suite Operations Deck: SLA Performance, Preventive Maintenance (PM F-01) & Infrastructure Analytics.</p>
                 </div>
                 <div style="text-align: right; background: rgba(255, 255, 255, 0.15); padding: 8px 18px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.3);">
-                    <div style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.09em; color: #FEE2E2; font-weight: 700;">Executive Deck</div>
+                    <div style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.09em; color: #BFDBFE; font-weight: 700;">Executive Deck</div>
                     <div style="font-size: 1.05rem; font-weight: 900; color: #FFFFFF;">FY 2026-27 Review</div>
                 </div>
             </div>
@@ -887,7 +888,7 @@ def run_streamlit_app():
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             st.markdown(f"""
-                <div class="metric-card darkred">
+                <div class="metric-card navy">
                     <div class="metric-label">Total Issues Logged</div>
                     <div class="metric-val">{total_issues:,}</div>
                     <div class="metric-sub">Active & Closed Tickets</div>
@@ -1095,7 +1096,7 @@ def run_streamlit_app():
         p1, p2, p3, p4, p5 = st.columns(5)
         with p1:
             st.markdown(f"""
-                <div class="metric-card darkred">
+                <div class="metric-card navy">
                     <div class="metric-label">Total Chargers</div>
                     <div class="metric-val">{total_chargers:,}</div>
                     <div class="metric-sub">Active Infrastructure</div>
@@ -1103,7 +1104,7 @@ def run_streamlit_app():
             """, unsafe_allow_html=True)
         with p2:
             st.markdown(f"""
-                <div class="metric-card red">
+                <div class="metric-card blue">
                     <div class="metric-label">Total Stations</div>
                     <div class="metric-val">{total_stations:,}</div>
                     <div class="metric-sub">Station Sites</div>
