@@ -9,8 +9,9 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 import streamlit as st
-import plotly.express as px
-import plotly.graph_objects as go
+
+    import plotly.express as px
+    import plotly.graph_objects as go
 
 # Styling constants for OpenPyXL excel generation
 FONT = 'Arial'
@@ -46,10 +47,28 @@ def get_val(row_tuple, idx, default=None):
 def load_issue_tracker(source):
     if isinstance(source, pd.DataFrame):
         df = source
+    elif isinstance(source, bytes):
+        if source.startswith(b'PK\x03\x04'):
+            source_stream = io.BytesIO(source)
+            wb = openpyxl.load_workbook(source_stream, data_only=True)
+            sheet_name = 'Issue Tracker' if 'Issue Tracker' in wb.sheetnames else wb.sheetnames[0]
+            rows = list(wb[sheet_name].iter_rows(values_only=True))
+            if not rows:
+                return pd.DataFrame()
+            headers = [h.strip() if isinstance(h, str) else h for h in rows[0] if h is not None]
+            df = pd.DataFrame([r[:len(headers)] for r in rows[1:]], columns=headers).dropna(how='all')
+        else:
+            df = pd.read_csv(io.BytesIO(source))
     elif hasattr(source, 'name') and source.name.lower().endswith('.csv'):
         df = pd.read_csv(source)
     else:
-        wb = openpyxl.load_workbook(source, data_only=True) if not hasattr(source, 'sheetnames') else source
+        if not hasattr(source, 'sheetnames'):
+            if isinstance(source, (str, io.BytesIO)):
+                wb = openpyxl.load_workbook(source, data_only=True)
+            else:
+                wb = openpyxl.load_workbook(io.BytesIO(source.read()), data_only=True)
+        else:
+            wb = source
         sheet_name = 'Issue Tracker' if 'Issue Tracker' in wb.sheetnames else wb.sheetnames[0]
         rows = list(wb[sheet_name].iter_rows(values_only=True))
         if not rows:
@@ -65,16 +84,69 @@ def load_issue_tracker(source):
 def load_pm_tracker(source):
     if isinstance(source, pd.DataFrame):
         df = source
-    elif hasattr(source, 'name') and source.name.lower().endswith('.csv'):
-        df = pd.read_csv(source)
-    else:
-        wb = openpyxl.load_workbook(source, data_only=True) if not hasattr(source, 'sheetnames') else source
+    elif isinstance(source, bytes):
+        if source.startswith(b'PK\x03\x04'):
+            source_stream = io.BytesIO(source)
+            wb = openpyxl.load_workbook(source_stream, data_only=True)
+        else:
+            df = pd.read_csv(io.BytesIO(source))
+            if 'Due Date' in df.columns:
+                df['Due Date Parsed'] = pd.to_datetime(df['Due Date'], errors='coerce')
+            if 'Actual Completion Date' in df.columns:
+                df['Actual Completion Date Parsed'] = pd.to_datetime(df['Actual Completion Date'], errors='coerce')
+            return df
         sheet_name = 'PM Tracker' if 'PM Tracker' in wb.sheetnames else wb.sheetnames[0]
         rows = list(wb[sheet_name].iter_rows(values_only=True))
         if not rows:
             return pd.DataFrame()
 
-        # Check if rows[0] is a standard header row (flat table format)
+        first_row_str = [str(h).strip().lower() for h in rows[0] if h is not None]
+        is_flat_table = any(k in first_row_str for k in ['zme', 'station id', 'charger id', 'pm status', 'due date']) or len(rows) <= 5
+
+        if is_flat_table:
+            headers = [h.strip() if isinstance(h, str) else h for h in rows[0] if h is not None]
+            df = pd.DataFrame([r[:len(headers)] for r in rows[1:]], columns=headers).dropna(how='all')
+        else:
+            row_date = rows[3] if len(rows) > 3 else ()
+            row_headers = rows[4] if len(rows) > 4 else ()
+            station_fields = [get_val(row_headers, i, f"Col_{i}") for i in PM_STATION_COLS]
+
+            records = []
+            for r in rows[5:]:
+                if get_val(r, 0) is None and get_val(r, 10) is None:
+                    continue
+                station = {name: get_val(r, i) for name, i in zip(station_fields, PM_STATION_COLS)}
+                for quarter, blk in PM_QUARTER_BLOCKS.items():
+                    compliance = get_val(r, blk['qcol'])
+                    col = blk['start']
+                    for _ in range(3):
+                        records.append({
+                            **station,
+                            'Quarter': quarter,
+                            'Due Date': get_val(row_date, col),
+                            'PM Status': get_val(r, col),
+                            'F.E. Inspection': get_val(r, col + 1),
+                            'HSE Inspection': get_val(r, col + 2),
+                            'Actual Completion Date': get_val(r, col + 3),
+                            'Quarterly Compliance': compliance,
+                        })
+                        col += 4
+            df = pd.DataFrame(records).rename(columns={'Route ': 'Route'})
+    elif hasattr(source, 'name') and source.name.lower().endswith('.csv'):
+        df = pd.read_csv(source)
+    else:
+        if not hasattr(source, 'sheetnames'):
+            if isinstance(source, (str, io.BytesIO)):
+                wb = openpyxl.load_workbook(source, data_only=True)
+            else:
+                wb = openpyxl.load_workbook(io.BytesIO(source.read()), data_only=True)
+        else:
+            wb = source
+        sheet_name = 'PM Tracker' if 'PM Tracker' in wb.sheetnames else wb.sheetnames[0]
+        rows = list(wb[sheet_name].iter_rows(values_only=True))
+        if not rows:
+            return pd.DataFrame()
+
         first_row_str = [str(h).strip().lower() for h in rows[0] if h is not None]
         is_flat_table = any(k in first_row_str for k in ['zme', 'station id', 'charger id', 'pm status', 'due date']) or len(rows) <= 5
 
