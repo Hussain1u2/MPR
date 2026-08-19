@@ -16,10 +16,10 @@ HAS_PLOTLY = True
 
 # Styling constants for OpenPyXL excel generation
 FONT = 'Arial'
-HEADER_FILL = PatternFill('solid', fgColor='1E3A8A')
+HEADER_FILL = PatternFill('solid', fgColor='991B1B')
 HEADER_FONT = Font(name=FONT, size=10, bold=True, color='FFFFFF')
-TITLE_FONT = Font(name=FONT, size=14, bold=True, color='1E3A8A')
-SECTION_FONT = Font(name=FONT, size=11, bold=True, color='1E3A8A')
+TITLE_FONT = Font(name=FONT, size=14, bold=True, color='991B1B')
+SECTION_FONT = Font(name=FONT, size=11, bold=True, color='991B1B')
 NOTE_FONT = Font(name=FONT, size=9, italic=True, color='64748B')
 CELL_FONT = Font(name=FONT, size=10)
 BOLD_CELL = Font(name=FONT, size=10, bold=True)
@@ -518,7 +518,7 @@ def plot_pie_chart(labels, values, title, colors=None, hole=0.45):
             labels=labels,
             values=values,
             hole=hole,
-            marker_colors=colors if colors else ['#10B981', '#EF4444', '#2563EB', '#F59E0B', '#64748B'],
+            marker_colors=colors if colors else ['#10B981', '#DC2626', '#475569', '#F59E0B', '#991B1B'],
             textinfo='percent+value',
             hoverinfo='label+percent+value',
             insidetextfont=dict(color='#FFFFFF', size=13, family='Inter')
@@ -537,7 +537,7 @@ def plot_pie_chart(labels, values, title, colors=None, hole=0.45):
         st.dataframe(df_pie, use_container_width=True)
 
 
-def plot_vertical_bar(df, x_col, y_col, title, color_hex="#2563EB"):
+def plot_vertical_bar(df, x_col, y_col, title, color_hex="#DC2626"):
     """Renders a clean vertical bar chart with exact value labels."""
     if HAS_PLOTLY:
         fig = px.bar(
@@ -568,7 +568,7 @@ def plot_grouped_bar(df, x_col, y_cols, title, colors=None):
     """Renders a responsive multi-series grouped column chart."""
     if HAS_PLOTLY:
         fig = go.Figure()
-        palette = colors if colors else ['#2563EB', '#10B981', '#EF4444', '#F59E0B']
+        palette = colors if colors else ['#DC2626', '#991B1B', '#475569', '#10B981']
         for idx, col in enumerate(y_cols):
             fig.add_trace(go.Bar(
                 name=col,
@@ -602,7 +602,7 @@ def run_streamlit_app():
         initial_sidebar_state="expanded"
     )
 
-    # Executive Corporate Navy & Electric Blue Presentation Styling
+    # Professional Executive Styling - Red, White & Slate Grey Theme
     st.markdown("""
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
@@ -623,26 +623,26 @@ def run_streamlit_app():
             color: #0F172A;
         }
 
-        /* Executive Corporate Navy & Blue Buttons */
+        /* Executive Red Buttons with Glow */
         .stButton > button, div[data-testid="stDownloadButton"] > button {
-            background: linear-gradient(135deg, #1E3A8A 0%, #2563EB 100%) !important;
+            background: linear-gradient(135deg, #991B1B 0%, #DC2626 100%) !important;
             color: #FFFFFF !important;
             border-radius: 8px !important;
             font-weight: 800 !important;
             font-size: 0.95rem !important;
             border: none !important;
             padding: 0.65rem 1.4rem !important;
-            box-shadow: 0 4px 14px rgba(37, 99, 235, 0.28) !important;
+            box-shadow: 0 4px 14px rgba(185, 28, 28, 0.28) !important;
             transition: all 0.2s ease !important;
             letter-spacing: 0.02em !important;
         }
         .stButton > button:hover, div[data-testid="stDownloadButton"] > button:hover {
-            background: linear-gradient(135deg, #1D4ED8 0%, #1E40AF 100%) !important;
-            box-shadow: 0 6px 20px rgba(37, 99, 235, 0.42) !important;
+            background: linear-gradient(135deg, #7F1D1D 0%, #B91C1C 100%) !important;
+            box-shadow: 0 6px 20px rgba(153, 27, 27, 0.42) !important;
             transform: translateY(-1px) !important;
         }
 
-        /* Streamlit Tabs Accent */
+        /* Streamlit Tabs Red Accent */
         button[data-baseweb="tab"] {
             font-weight: 800 !important;
             color: #475569 !important;
@@ -650,27 +650,27 @@ def run_streamlit_app():
             padding: 0.75rem 1.25rem !important;
         }
         button[data-baseweb="tab"][aria-selected="true"] {
-            color: #1E3A8A !important;
-            border-bottom-color: #2563EB !important;
+            color: #991B1B !important;
+            border-bottom-color: #DC2626 !important;
         }
         div[data-baseweb="tab-highlight"] {
-            background-color: #2563EB !important;
+            background-color: #DC2626 !important;
             height: 3px !important;
         }
 
-        /* Meeting Header Box - Deep Corporate Navy to Electric Blue */
+        /* Executive Red Header Box */
         .exec-header-box {
-            background: linear-gradient(135deg, #0F172A 0%, #1E3A8A 50%, #2563EB 100%);
+            background: linear-gradient(135deg, #7F1D1D 0%, #B91C1C 45%, #991B1B 100%);
             padding: 1.5rem 2.2rem;
             border-radius: 14px;
             color: #FFFFFF;
-            box-shadow: 0 12px 30px rgba(30, 58, 138, 0.25);
+            box-shadow: 0 12px 30px rgba(185, 28, 28, 0.22);
             margin-bottom: 1.5rem;
-            border-left: 8px solid #2563EB;
+            border-left: 8px solid #DC2626;
         }
 
         .exec-badge {
-            background-color: rgba(255, 255, 255, 0.16);
+            background-color: rgba(255, 255, 255, 0.18);
             color: #FFFFFF;
             font-size: 0.73rem;
             font-weight: 800;
@@ -695,13 +695,13 @@ def run_streamlit_app():
 
         .exec-subtitle {
             font-size: 0.95rem;
-            color: #BFDBFE;
+            color: #FEE2E2;
             margin-top: 0.35rem;
             margin-bottom: 0;
             font-weight: 500;
         }
 
-        /* Metric Cards for Office Presentation */
+        /* Metric Cards */
         .metric-card {
             background: #FFFFFF;
             border: 1px solid #E2E8F0;
@@ -712,12 +712,12 @@ def run_streamlit_app():
         }
         .metric-card:hover {
             transform: translateY(-3px);
-            box-shadow: 0 8px 24px rgba(37, 99, 235, 0.12);
+            box-shadow: 0 8px 24px rgba(220, 38, 38, 0.12);
         }
-        .metric-card.navy { border-top: 5px solid #1E3A8A; }
-        .metric-card.blue { border-top: 5px solid #2563EB; }
+        .metric-card.red { border-top: 5px solid #DC2626; }
+        .metric-card.darkred { border-top: 5px solid #991B1B; }
+        .metric-card.grey { border-top: 5px solid #475569; }
         .metric-card.green { border-top: 5px solid #10B981; }
-        .metric-card.red { border-top: 5px solid #EF4444; }
         .metric-card.amber { border-top: 5px solid #F59E0B; }
 
         .metric-label {
@@ -744,13 +744,13 @@ def run_streamlit_app():
         .section-header {
             font-size: 1.15rem;
             font-weight: 800;
-            color: #1E3A8A;
+            color: #991B1B;
             margin-top: 1rem;
             margin-bottom: 0.8rem;
             display: flex;
             align-items: center;
             gap: 0.5rem;
-            border-bottom: 2px solid #DBEAFE;
+            border-bottom: 2px solid #FEE2E2;
             padding-bottom: 0.4rem;
             letter-spacing: -0.01em;
         }
@@ -773,7 +773,7 @@ def run_streamlit_app():
                     <p class="exec-subtitle">C-Suite Operations Deck: SLA Performance, Preventive Maintenance (PM F-01) & Infrastructure Analytics.</p>
                 </div>
                 <div style="text-align: right; background: rgba(255, 255, 255, 0.15); padding: 8px 18px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.3);">
-                    <div style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.09em; color: #BFDBFE; font-weight: 700;">Executive Deck</div>
+                    <div style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.09em; color: #FEE2E2; font-weight: 700;">Executive Deck</div>
                     <div style="font-size: 1.05rem; font-weight: 900; color: #FFFFFF;">FY 2026-27 Review</div>
                 </div>
             </div>
@@ -803,8 +803,8 @@ def run_streamlit_app():
         c_auth1, c_auth2 = st.columns([7, 5])
         with c_auth1:
             input_email = st.text_input(
-                "🏢 Enter your Official Office Email Address:",
-                placeholder="e.g. alex.smith@chargezone.com",
+                "🏢 Enter your Official Office Email Address (.co.in domain):",
+                placeholder="e.g. alex.smith@chargezone.co.in",
                 key="office_email_input"
             )
             login_btn = st.button("🔐 Verify & Access Dashboard", type="primary")
@@ -812,30 +812,30 @@ def run_streamlit_app():
             if login_btn and input_email:
                 clean_email = input_email.strip().lower()
                 if '@' not in clean_email or '.' not in clean_email.split('@')[-1]:
-                    st.error("❌ **Invalid Email Format**: Please enter a complete email address (e.g. user@company.com).")
+                    st.error("❌ **Invalid Email Format**: Please enter a complete email address (e.g. user@domain.co.in).")
+                elif not clean_email.endswith('.co.in'):
+                    st.error("❌ **Access Restricted**: Only official corporate email addresses ending with **`.co.in`** (e.g. `user@chargezone.co.in`, `user@domain.co.in`) are allowed.")
+                elif clean_email.split('@')[-1] in PUBLIC_DOMAINS:
+                    st.error(f"❌ **Public Email Restricted**: Public email providers are restricted. Please use your official corporate `.co.in` email address.")
                 else:
-                    domain = clean_email.split('@')[-1]
-                    if domain in PUBLIC_DOMAINS:
-                        st.error(f"❌ **Public Email Restricted**: `{domain}` is a public email provider. Please use your official corporate office email address.")
+                    # Check 10 User Limit
+                    if clean_email in st.session_state['authorized_office_emails']:
+                        st.session_state['auth_email'] = clean_email
+                        st.success(f"✓ Access Granted! Welcome back, `{clean_email}`.")
+                        st.rerun()
+                    elif len(st.session_state['authorized_office_emails']) < 10:
+                        st.session_state['authorized_office_emails'].append(clean_email)
+                        st.session_state['auth_email'] = clean_email
+                        st.success(f"✓ Account Registered ({len(st.session_state['authorized_office_emails'])}/10 slots used). Welcome, `{clean_email}`!")
+                        st.rerun()
                     else:
-                        # Check 10 User Limit
-                        if clean_email in st.session_state['authorized_office_emails']:
-                            st.session_state['auth_email'] = clean_email
-                            st.success(f"✓ Access Granted! Welcome back, `{clean_email}`.")
-                            st.rerun()
-                        elif len(st.session_state['authorized_office_emails']) < 10:
-                            st.session_state['authorized_office_emails'].append(clean_email)
-                            st.session_state['auth_email'] = clean_email
-                            st.success(f"✓ Account Registered ({len(st.session_state['authorized_office_emails'])}/10 slots used). Welcome, `{clean_email}`!")
-                            st.rerun()
-                        else:
-                            st.error("⛔ **Access Denied**: Maximum limit of **10 authorized office email users** has been reached. Please contact your administrator.")
+                        st.error("⛔ **Access Denied**: Maximum limit of **10 authorized `.co.in` office email users** has been reached. Please contact your administrator.")
 
         with c_auth2:
             st.info(f"""
             #### 🛡️ Access Policy & Governance
-            - **Domain Requirement**: Any Corporate / Office Email Domain (`@company.com`, `@chargezone.com`, etc.). Public emails are restricted.
-            - **User Access Limit**: Strictly capped at **10 Authorized Person Accounts**.
+            - **Domain Restriction**: Strictly restricted to Official **`.co.in`** Corporate Email Domains (e.g. `@chargezone.co.in`, `@domain.co.in`).
+            - **User Access Limit**: Strictly capped at **10 Authorized `.co.in` Person Accounts**.
             - **Current Registered Users**: `{len(st.session_state['authorized_office_emails'])} / 10 Slots Used`.
             """)
         return
@@ -986,7 +986,7 @@ def run_streamlit_app():
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             st.markdown(f"""
-                <div class="metric-card navy">
+                <div class="metric-card darkred">
                     <div class="metric-label">Total Issues Logged</div>
                     <div class="metric-val">{total_issues:,}</div>
                     <div class="metric-sub">Active & Closed Tickets</div>
@@ -1194,7 +1194,7 @@ def run_streamlit_app():
         p1, p2, p3, p4, p5 = st.columns(5)
         with p1:
             st.markdown(f"""
-                <div class="metric-card navy">
+                <div class="metric-card darkred">
                     <div class="metric-label">Total Chargers</div>
                     <div class="metric-val">{total_chargers:,}</div>
                     <div class="metric-sub">Active Infrastructure</div>
@@ -1202,7 +1202,7 @@ def run_streamlit_app():
             """, unsafe_allow_html=True)
         with p2:
             st.markdown(f"""
-                <div class="metric-card blue">
+                <div class="metric-card grey">
                     <div class="metric-label">Total Stations</div>
                     <div class="metric-val">{total_stations:,}</div>
                     <div class="metric-sub">Station Sites</div>
