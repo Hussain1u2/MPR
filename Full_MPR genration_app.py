@@ -1576,7 +1576,6 @@ def run_streamlit_app():
 
         # 1. ZME Performance, Overall CM & CM-TAT Efficiency Breakdown
         st.markdown('<div class="section-header">1. ZME Performance, Overall CM & CM-TAT Efficiency Breakdown</div>', unsafe_allow_html=True)
-        col_zme_c, col_zme_t = st.columns([6, 6])
         zme_col = find_col(filtered_issue_df, ['ZME', 'ZME Name', 'ZME_Name', 'Zone Manager'])
 
         if zme_col:
@@ -1594,30 +1593,20 @@ def run_streamlit_app():
             zme_df['CM-TAT Efficiency %'] = (zme_df['Closed_Within_TAT'] / zme_df['Closed_Faults'].replace(0, pd.NA) * 100).fillna(0.0).round(1)
             zme_df = zme_df.rename(columns={zme_col: 'ZME Name'}).sort_values(by='Faults_Received', ascending=False)
 
-            with col_zme_c:
-                plot_grouped_bar(
-                    df=zme_df,
-                    x_col='ZME Name',
-                    y_cols=['Faults_Received', 'Open_Faults', 'Closed_Within_TAT', 'Closed_Without_TAT'],
-                    title="Faults Registered vs Open vs Within TAT vs Without TAT by ZME",
-                    colors=['#991B1B', '#EF4444', '#DC2626', '#7F1D1D']
-                )
-
-            with col_zme_t:
-                st.write("##### 📊 ZME Fault & Efficiency Table")
-                st.dataframe(
-                    zme_df[['ZME Name', 'Faults_Received', 'Open_Faults', 'Closed_Faults', 'Closed_Within_TAT', 'Closed_Without_TAT', 'Overall CM Efficiency %', 'CM-TAT Efficiency %']].style.format({
-                        'Faults_Received': '{:,}',
-                        'Open_Faults': '{:,}',
-                        'Closed_Faults': '{:,}',
-                        'Closed_Within_TAT': '{:,}',
-                        'Closed_Without_TAT': '{:,}',
-                        'Overall CM Efficiency %': '{:.1f}%',
-                        'CM-TAT Efficiency %': '{:.1f}%'
-                    }).background_gradient(subset=['Overall CM Efficiency %', 'CM-TAT Efficiency %'], cmap='Reds'),
-                    use_container_width=True,
-                    height=300
-                )
+            st.write("##### 📊 ZME Fault & Efficiency Table")
+            st.dataframe(
+                zme_df[['ZME Name', 'Faults_Received', 'Open_Faults', 'Closed_Faults', 'Closed_Within_TAT', 'Closed_Without_TAT', 'Overall CM Efficiency %', 'CM-TAT Efficiency %']].style.format({
+                    'Faults_Received': '{:,}',
+                    'Open_Faults': '{:,}',
+                    'Closed_Faults': '{:,}',
+                    'Closed_Within_TAT': '{:,}',
+                    'Closed_Without_TAT': '{:,}',
+                    'Overall CM Efficiency %': '{:.1f}%',
+                    'CM-TAT Efficiency %': '{:.1f}%'
+                }).background_gradient(subset=['Overall CM Efficiency %', 'CM-TAT Efficiency %'], cmap='Reds'),
+                use_container_width=True,
+                height=320
+            )
         else:
             st.info("ℹ️ ZME column not found in dataset.")
 
