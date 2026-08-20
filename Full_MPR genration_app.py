@@ -1196,7 +1196,7 @@ def run_streamlit_app():
                 <div class="metric-card {'green' if cm_eff_closed >= 85 else 'amber'}">
                     <div class="metric-label">CM Efficiency</div>
                     <div class="metric-val">{cm_eff_closed:.1f}%</div>
-                    <div class="metric-sub">Closed Within TAT / Total Closed</div>
+                    <div class="metric-sub">Target Benchmark: ≥ 85.0%</div>
                 </div>
             """, unsafe_allow_html=True)
 
