@@ -1806,10 +1806,8 @@ def run_streamlit_app():
                     st.markdown("---")
 
                 # ---------------------------------------------------------
-                # B. Top 20 Stations with Repetitive Faults (Descending Order)
+                # B. Top 20 Stations with Repetitive Faults (Descending Order Explorer)
                 # ---------------------------------------------------------
-                col_rep_chart, col_rep_tbl = st.columns([5, 7])
-                
                 # Compute total occurrences per station
                 stn_totals = repeats.groupby(stn_col)['Occurrences'].sum().reset_index(name='Total_Station_Occurrences')
                 stn_totals = stn_totals.sort_values(by='Total_Station_Occurrences', ascending=False)
@@ -1818,28 +1816,10 @@ def run_streamlit_app():
                 top_20_stn_ids = stn_totals.head(20)[stn_col].tolist()
                 top_20_repeats = repeats[repeats[stn_col].isin(top_20_stn_ids)].copy()
                 
-                with col_rep_chart:
-                    st.markdown("##### 📊 Top 20 Repetitive Stations Chart")
-                    top_20_chart_df = stn_totals.head(20).copy()
-                    if stn_name_col and stn_name_col in repeats.columns:
-                        name_map = repeats.groupby(stn_col)[stn_name_col].first().to_dict()
-                        top_20_chart_df['Station_Label'] = top_20_chart_df[stn_col].astype(str) + " (" + top_20_chart_df[stn_col].map(name_map).fillna('').astype(str) + ")"
-                    else:
-                        top_20_chart_df['Station_Label'] = top_20_chart_df[stn_col].astype(str)
-                    
-                    plot_vertical_bar(
-                        top_20_chart_df,
-                        x_col='Station_Label',
-                        y_col='Total_Station_Occurrences',
-                        title="Top 20 Stations by Repetitive Fault Occurrences",
-                        color_hex="#DC2626"
-                    )
+                st.write("##### 📁 Top 20 Repetitive Stations Explorer (Descending Order by Occurrences)")
+                st.caption("Click on any station below (ranked by total repetitive fault count) to inspect sub-types and ticket records:")
                 
-                with col_rep_tbl:
-                    st.write("##### 📁 Top 20 Repetitive Stations Explorer (Descending Order)")
-                    st.caption("Click on any station below (sorted by total repetitive fault count) to inspect sub-types:")
-                    
-                    for _, row_stn in stn_totals.head(20).iterrows():
+                for _, row_stn in stn_totals.head(20).iterrows():
                         stn_id = row_stn[stn_col]
                         stn_group = top_20_repeats[top_20_repeats[stn_col] == stn_id]
                         
