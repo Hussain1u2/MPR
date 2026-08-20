@@ -450,7 +450,6 @@ def write_data_sheet(wb, name, df, table_name, date_cols):
 
 
 def add_pm_helper_columns(ws, pm_df, pcol, last_row):
-    due_col, done_col = pcol.get('Due Date', 'G'), pcol.get('Actual Completion Date', 'J')
     exclude_cols = {'Issue Date Parsed', 'Due Date Parsed', 'Actual Completion Date Parsed', 'Is_TAT_Compliant', 'Is_TAT_Breached', 'Is_PM_Done', 'Is_PM_Pending'}
     clean_cols = [c for c in pm_df.columns if c not in exclude_cols]
     adv_idx = len(clean_cols) + 1
@@ -458,19 +457,47 @@ def add_pm_helper_columns(ws, pm_df, pcol, last_row):
 
     h1 = ws.cell(row=1, column=adv_idx, value='Advance PM Done')
     h1.font, h1.fill = HEADER_FONT, HEADER_FILL
-    for r in range(2, last_row + 1):
-        ws.cell(row=r, column=adv_idx, value=f'=IF(AND(${done_col}{r}<>"",${due_col}{r}<>"",${done_col}{r}<${due_col}{r}),"Yes",IF(${done_col}{r}<>"","No",""))')
+
+    due_col_name = find_col(pm_df, ['Due Date', 'Due Date Parsed', 'Scheduled Date'])
+    done_col_name = find_col(pm_df, ['Actual Completion Date', 'Actual Completion Date Parsed', 'Completion Date'])
+    zme_col_name = find_col(pm_df, ['ZME', 'ZME Name', 'ZME_Name', 'Zone Manager'])
+    station_col_name = find_col(pm_df, ['Station ID', 'Station_ID', 'Station'])
+
+    for idx, r_data in enumerate(pm_df.itertuples(), start=2):
+        adv_val = "No"
+        if due_col_name and done_col_name and hasattr(r_data, due_col_name) and hasattr(r_data, done_col_name):
+            due_val = getattr(r_data, due_col_name)
+            done_val = getattr(r_data, done_col_name)
+            if pd.notna(done_val) and pd.notna(due_val):
+                try:
+                    if pd.to_datetime(done_val) < pd.to_datetime(due_val):
+                        adv_val = "Yes"
+                except Exception:
+                    pass
+        c_adv = ws.cell(row=idx, column=adv_idx, value=adv_val)
+        c_adv.font, c_adv.border = CELL_FONT, BORDER
+
     ws.column_dimensions[adv_letter].width = 16
 
-    zme_col, station_col = pcol.get('ZME', 'A'), pcol.get('Station ID', 'B')
     occ_idx = adv_idx + 1
     occ_letter = get_column_letter(occ_idx)
     h2 = ws.cell(row=1, column=occ_idx, value='First Station Occurrence')
     h2.font, h2.fill = HEADER_FONT, HEADER_FILL
-    for r in range(2, last_row + 1):
-        ws.cell(row=r, column=occ_idx, value=f'=IF(COUNTIFS(${zme_col}$2:${zme_col}{r},${zme_col}{r},${station_col}$2:${station_col}{r},${station_col}{r})=1,1,0)')
-    ws.column_dimensions[occ_letter].width = 20
 
+    seen_pairs = set()
+    for idx, r_data in enumerate(pm_df.itertuples(), start=2):
+        occ_val = 1
+        z_v = getattr(r_data, zme_col_name) if zme_col_name and hasattr(r_data, zme_col_name) else 'N/A'
+        s_v = getattr(r_data, station_col_name) if station_col_name and hasattr(r_data, station_col_name) else 'N/A'
+        pair = (str(z_v).strip(), str(s_v).strip())
+        if pair in seen_pairs:
+            occ_val = 0
+        else:
+            seen_pairs.add(pair)
+        c_occ = ws.cell(row=idx, column=occ_idx, value=occ_val)
+        c_occ.font, c_occ.border = CELL_FONT, BORDER
+
+    ws.column_dimensions[occ_letter].width = 20
     ws.tables['PMTable'].ref = f"A1:{occ_letter}{last_row}"
     return adv_letter, occ_letter
 
@@ -534,8 +561,8 @@ def build_issue_dashboard(wb, issue_df, irange):
 
     row = 4
     zme_header_row = row + 1
-    row = section_title(ws, row, '1. Issue Summary & CM Efficiency by ZME', 7)
-    row = header_row(ws, row, ['ZME Name', 'Faults Received', 'Open Faults', 'Closed Faults', 'Closed Within TAT', 'Closed Without TAT', 'CM Efficiency %'])
+    row = section_title(ws, row, '1. Issue Summary & CM / TAT Efficiency by ZME', 7)
+    row = header_row(ws, row, ['ZME Name', 'Faults Received', 'Open Faults', 'Closed Faults', 'Closed Within TAT', 'Closed Without TAT', 'CM / TAT Efficiency %'])
 
     zme_col = find_col(issue_df, ['ZME', 'ZME Name', 'ZME_Name', 'Zone Manager'])
     zme_start = row
@@ -570,8 +597,8 @@ def build_issue_dashboard(wb, issue_df, irange):
 
     row += 1
     zone_header_row = row + 1
-    row = section_title(ws, row, '2. Issue Summary & CM Efficiency by Zone', 7)
-    row = header_row(ws, row, ['Zone', 'Faults Received', 'Open Faults', 'Closed Faults', 'Closed Within TAT', 'Closed Without TAT', 'CM Efficiency %'])
+    row = section_title(ws, row, '2. Issue Summary & CM / TAT Efficiency by Zone', 7)
+    row = header_row(ws, row, ['Zone', 'Faults Received', 'Open Faults', 'Closed Faults', 'Closed Within TAT', 'Closed Without TAT', 'CM / TAT Efficiency %'])
 
     zone_start = row
     zone_col = find_col(issue_df, ['Zone', 'Zone Name', 'Region'])
@@ -1392,7 +1419,7 @@ def run_streamlit_app():
     tab_issues, tab_pm, tab_raw = st.tabs([
         "📉 Issue MPR Charts & Tables",
         "🛠️ PM F-01 Charts & Tables",
-        "📋 Master Data Explorer"
+        "📋 Data Explorer"
     ])
 
     # ---------------------------------------------------------
@@ -1481,7 +1508,7 @@ def run_streamlit_app():
         with c6:
             st.markdown(f"""
                 <div class="metric-card {'green' if cm_eff_closed >= 85 else 'amber'}">
-                    <div class="metric-label">CM Efficiency</div>
+                    <div class="metric-label">CM / TAT Efficiency</div>
                     <div class="metric-val">{cm_eff_closed:.1f}%</div>
                     <div class="metric-sub">Target Benchmark: ≥ 85.0%</div>
                 </div>
@@ -1489,8 +1516,8 @@ def run_streamlit_app():
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # 1. ZME Performance & CM Efficiency Breakdown
-        st.markdown('<div class="section-header">1. ZME Performance & CM Efficiency Breakdown</div>', unsafe_allow_html=True)
+        # 1. ZME Performance & CM / TAT Efficiency Breakdown
+        st.markdown('<div class="section-header">1. ZME Performance & CM / TAT Efficiency Breakdown</div>', unsafe_allow_html=True)
         col_zme_c, col_zme_t = st.columns([6, 6])
         zme_col = find_col(filtered_issue_df, ['ZME', 'ZME Name', 'ZME_Name', 'Zone Manager'])
 
@@ -1549,7 +1576,7 @@ def run_streamlit_app():
             )
 
         with col_zone_chart:
-            st.markdown('<div class="section-header">🏢 3. Zone CM Efficiency (Grouped Chart & Table)</div>', unsafe_allow_html=True)
+            st.markdown('<div class="section-header">🏢 3. Zone CM / TAT Efficiency (Grouped Chart & Table)</div>', unsafe_allow_html=True)
             zone_col = find_col(filtered_issue_df, ['Zone', 'Zone Name', 'Region'])
             if zone_col:
                 zone_df = filtered_issue_df.groupby(zone_col).agg(
@@ -2012,14 +2039,14 @@ def run_streamlit_app():
             st.info("ℹ️ OCPP ID / Charger ID column not found in dataset for compliance verification.")
 
     # ---------------------------------------------------------
-    # TAB 3: MASTER DATA EXPLORER
+    # TAB 3: DATA EXPLORER
     # ---------------------------------------------------------
     with tab_raw:
-        st.markdown('<div class="section-header">🔍 Master Data Governance</div>', unsafe_allow_html=True)
-        data_choice = st.radio("Select Sheet:", ["Issue Tracker Master Data", "PM Tracker Master Data"], horizontal=True)
+        st.markdown('<div class="section-header">🔍 Data Explorer</div>', unsafe_allow_html=True)
+        data_choice = st.radio("Select Dataset:", ["Issue Tracker Dataset", "PM Tracker Dataset"], horizontal=True)
         exclude_cols = {'Issue Date Parsed', 'Due Date Parsed', 'Actual Completion Date Parsed', 'Is_TAT_Compliant', 'Is_TAT_Breached', 'Is_PM_Done', 'Is_PM_Pending'}
 
-        if data_choice == "Issue Tracker Master Data":
+        if data_choice == "Issue Tracker Dataset":
             df_disp = ensure_unique_columns(filtered_issue_df.drop(columns=[c for c in exclude_cols if c in filtered_issue_df.columns]))
             st.dataframe(df_disp, use_container_width=True)
         else:
