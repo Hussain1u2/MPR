@@ -298,33 +298,73 @@ def load_pm_tracker(source):
             df = pd.DataFrame(records).rename(columns={'Route ': 'Route'})
 
     df = ensure_unique_columns(df)
-    if 'Due Date' in df.columns:
-        df['Due Date Parsed'] = pd.to_datetime(df['Due Date'], errors='coerce')
+
+    # 1. Parse Due Date
+    due_col_found = find_col(df, ['Due Date', 'PM Due Date', 'Scheduled Date', 'Schedule Date', 'PM Date', 'Date', 'Target Date', 'Completion Date', 'Due_Date'])
+    if due_col_found and due_col_found in df.columns:
+        df['Due Date Parsed'] = pd.to_datetime(df[due_col_found], errors='coerce')
     elif 'Due Date Parsed' not in df.columns:
-        due_col_found = find_col(df, ['Due Date', 'PM Due Date', 'Scheduled Date'])
-        if due_col_found:
-            df['Due Date Parsed'] = pd.to_datetime(df[due_col_found], errors='coerce')
+        df['Due Date Parsed'] = pd.NaT
 
-    if 'Actual Completion Date' in df.columns:
-        df['Actual Completion Date Parsed'] = pd.to_datetime(df['Actual Completion Date'], errors='coerce')
+    # 2. Parse Actual Completion Date
+    act_col_found = find_col(df, ['Actual Completion Date', 'Completion Date', 'PM Completion Date', 'Actual Date'])
+    if act_col_found and act_col_found in df.columns:
+        df['Actual Completion Date Parsed'] = pd.to_datetime(df[act_col_found], errors='coerce')
     elif 'Actual Completion Date Parsed' not in df.columns:
-        act_col_found = find_col(df, ['Actual Completion Date', 'Completion Date', 'PM Completion Date'])
-        if act_col_found:
-            df['Actual Completion Date Parsed'] = pd.to_datetime(df[act_col_found], errors='coerce')
+        df['Actual Completion Date Parsed'] = pd.NaT
 
+    # 3. Parse Go Live Date
     go_live_col = find_col(df, ['Go Live Date', 'Go-Live Date', 'Live Date', 'Commissioning Date', 'Go Live'])
     if go_live_col and go_live_col in df.columns:
         df['Go Live Date Parsed'] = pd.to_datetime(df[go_live_col], errors='coerce')
+    elif 'Go Live Date Parsed' not in df.columns:
+        df['Go Live Date Parsed'] = pd.NaT
 
-    # Derived Period Columns for Date, Month, Quarter, Year grouping
-    if 'Due Date Parsed' in df.columns:
-        df['Scheduled Date'] = df['Due Date Parsed'].dt.date
-        df['Scheduled Month'] = df['Due Date Parsed'].dt.strftime('%b-%Y')
-        df['Scheduled Year'] = df['Due Date Parsed'].dt.year.astype('Int64').astype(str)
-        if 'Quarter' not in df.columns or df['Quarter'].dropna().empty:
-            df['Scheduled Quarter'] = 'Q' + df['Due Date Parsed'].dt.quarter.astype(str)
-        else:
-            df['Scheduled Quarter'] = df['Quarter']
+    # 4. Derived Period Columns for Date, Month, Quarter, Year grouping
+    # --- Month ---
+    raw_m_col = find_col(df, ['Scheduled Month', 'PM Month', 'Month', 'PM_Month', 'Schedule Month'])
+    if raw_m_col and raw_m_col in df.columns and not df[raw_m_col].dropna().empty:
+        df['Scheduled Month'] = df[raw_m_col].astype(str).str.strip()
+    elif 'Due Date Parsed' in df.columns and df['Due Date Parsed'].notna().any():
+        df['Scheduled Month'] = df['Due Date Parsed'].dt.strftime('%b-%Y').fillna('Unscheduled / General')
+    elif 'Go Live Date Parsed' in df.columns and df['Go Live Date Parsed'].notna().any():
+        df['Scheduled Month'] = df['Go Live Date Parsed'].dt.strftime('%b-%Y').fillna('Unscheduled / General')
+    else:
+        df['Scheduled Month'] = 'Unscheduled / General'
+
+    # --- Quarter ---
+    raw_q_col = find_col(df, ['Scheduled Quarter', 'PM Quarter', 'Quarter', 'PM_Quarter', 'Qtr'])
+    if raw_q_col and raw_q_col in df.columns and not df[raw_q_col].dropna().empty:
+        q_vals = df[raw_q_col].astype(str).str.strip()
+        df['Scheduled Quarter'] = q_vals.apply(lambda x: f"Q{x}" if x.isdigit() and len(x) == 1 else x)
+    elif 'Due Date Parsed' in df.columns and df['Due Date Parsed'].notna().any():
+        df['Scheduled Quarter'] = ('Q' + df['Due Date Parsed'].dt.quarter.astype(str)).fillna('Unscheduled / General')
+    elif 'Go Live Date Parsed' in df.columns and df['Go Live Date Parsed'].notna().any():
+        df['Scheduled Quarter'] = ('Q' + df['Go Live Date Parsed'].dt.quarter.astype(str)).fillna('Unscheduled / General')
+    else:
+        df['Scheduled Quarter'] = 'Unscheduled / General'
+
+    # --- Year ---
+    raw_y_col = find_col(df, ['Scheduled Year', 'PM Year', 'Year', 'PM_Year', 'FY', 'Financial Year'])
+    if raw_y_col and raw_y_col in df.columns and not df[raw_y_col].dropna().empty:
+        df['Scheduled Year'] = df[raw_y_col].astype(str).str.strip()
+    elif 'Due Date Parsed' in df.columns and df['Due Date Parsed'].notna().any():
+        df['Scheduled Year'] = df['Due Date Parsed'].dt.year.astype(str).replace('<NA>', 'Unscheduled / General').fillna('Unscheduled / General')
+    elif 'Go Live Date Parsed' in df.columns and df['Go Live Date Parsed'].notna().any():
+        df['Scheduled Year'] = df['Go Live Date Parsed'].dt.year.astype(str).replace('<NA>', 'Unscheduled / General').fillna('Unscheduled / General')
+    else:
+        df['Scheduled Year'] = 'Unscheduled / General'
+
+    # --- Date ---
+    raw_d_col = find_col(df, ['Scheduled Date', 'PM Date', 'Date', 'Schedule Date'])
+    if raw_d_col and raw_d_col in df.columns and not df[raw_d_col].dropna().empty:
+        df['Scheduled Date'] = df[raw_d_col].astype(str).str.strip()
+    elif 'Due Date Parsed' in df.columns and df['Due Date Parsed'].notna().any():
+        df['Scheduled Date'] = df['Due Date Parsed'].dt.strftime('%Y-%m-%d').fillna('Unscheduled / General')
+    elif 'Go Live Date Parsed' in df.columns and df['Go Live Date Parsed'].notna().any():
+        df['Scheduled Date'] = df['Go Live Date Parsed'].dt.strftime('%Y-%m-%d').fillna('Unscheduled / General')
+    else:
+        df['Scheduled Date'] = 'Unscheduled / General'
 
     if 'PM Status' in df.columns:
         pm_upper = df['PM Status'].astype(str).str.upper()
@@ -1454,9 +1494,6 @@ def run_streamlit_app():
     # ---------------------------------------------------------
     # TAB 2: PM F-01 DASHBOARD (CHARTS + TABLES SIDE-BY-SIDE)
     # ---------------------------------------------------------
-    # ---------------------------------------------------------
-    # TAB 2: PM F-01 DASHBOARD (CHARTS + TABLES SIDE-BY-SIDE)
-    # ---------------------------------------------------------
     with tab_pm:
         st.markdown('<div class="section-header">🛠️ Preventive Maintenance (PM F-01) Operational Analytics</div>', unsafe_allow_html=True)
 
@@ -1680,62 +1717,79 @@ def run_streamlit_app():
         }
         target_period_col = period_col_map[period_choice]
 
+        # Resolve period series with fallback
         if target_period_col in pm_df.columns and not pm_df[target_period_col].dropna().empty:
-            period_summary_list = []
-            for p_val, group in pm_df.groupby(target_period_col):
-                p_str = str(p_val)
-                p_chargers = len(group[pm_chg_col].dropna().unique()) if pm_chg_col and pm_chg_col in group.columns else len(group)
-                p_stations = len(group[pm_stn_col].dropna().unique()) if pm_stn_col and pm_stn_col in group.columns else len(group)
-                p_planning = len(group)
-
-                if pm_st_col and pm_st_col in group.columns:
-                    st_u = group[pm_st_col].astype(str).str.strip().str.upper()
-                    p_done = int((st_u == 'YES').sum())
-                    p_pending = int((st_u == 'NO').sum())
-                else:
-                    p_done = int(group['Is_PM_Done'].sum()) if 'Is_PM_Done' in group.columns else 0
-                    p_pending = int(group['Is_PM_Pending'].sum()) if 'Is_PM_Pending' in group.columns else 0
-
-                p_eff = (p_done / p_planning * 100) if p_planning > 0 else 0.0
-
-                period_summary_list.append({
-                    f'Period ({period_choice})': p_str,
-                    'Stations Scheduled': p_stations,
-                    'Chargers Scheduled': p_chargers,
-                    'PM Planning': p_planning,
-                    'PM Done': p_done,
-                    'PM Pending': p_pending,
-                    'PM Efficiency (%)': round(p_eff, 1)
-                })
-
-            period_summary_df = pd.DataFrame(period_summary_list)
-
-            c_per_chart, c_per_tbl = st.columns([6, 6])
-            with c_per_chart:
-                plot_grouped_bar(
-                    df=period_summary_df,
-                    x_col=f'Period ({period_choice})',
-                    y_cols=['Stations Scheduled', 'PM Done', 'PM Pending'],
-                    title=f"Scheduled Stations vs Completion by {period_choice}",
-                    colors=['#2563EB', '#16A34A', '#DC2626']
-                )
-
-            with c_per_tbl:
-                st.write(f"##### Scheduled Stations Data Table ({period_choice} Level)")
-                st.dataframe(
-                    period_summary_df.style.format({
-                        'Stations Scheduled': '{:,}',
-                        'Chargers Scheduled': '{:,}',
-                        'PM Planning': '{:,}',
-                        'PM Done': '{:,}',
-                        'PM Pending': '{:,}',
-                        'PM Efficiency (%)': '{:.1f}%'
-                    }).background_gradient(subset=['PM Efficiency (%)'], cmap='Blues'),
-                    use_container_width=True,
-                    height=280
-                )
+            period_series = pm_df[target_period_col]
         else:
-            st.info(f"ℹ️ {period_choice} period data not available for PM scheduled stations.")
+            if period_choice == "Month":
+                m_col = find_col(pm_df, ['Month', 'PM Month', 'Scheduled Month', 'Due Date Parsed'])
+                period_series = pm_df[m_col].astype(str) if m_col and m_col in pm_df.columns else pd.Series(['General / All-Period'] * len(pm_df))
+            elif period_choice == "Quarter":
+                q_col = find_col(pm_df, ['Quarter', 'PM Quarter', 'Scheduled Quarter'])
+                period_series = pm_df[q_col].astype(str) if q_col and q_col in pm_df.columns else pd.Series(['General / All-Period'] * len(pm_df))
+            elif period_choice == "Year":
+                y_col = find_col(pm_df, ['Year', 'PM Year', 'FY', 'Financial Year', 'Scheduled Year'])
+                period_series = pm_df[y_col].astype(str) if y_col and y_col in pm_df.columns else pd.Series(['General / All-Period'] * len(pm_df))
+            else:
+                d_col = find_col(pm_df, ['Date', 'Due Date', 'PM Date', 'Scheduled Date'])
+                period_series = pm_df[d_col].astype(str) if d_col and d_col in pm_df.columns else pd.Series(['General / All-Period'] * len(pm_df))
+
+        pm_df_temp = pm_df.copy()
+        pm_df_temp['_Group_Period_'] = period_series.astype(str).str.strip().replace({'nan': 'Unscheduled / General', 'None': 'Unscheduled / General', 'NaT': 'Unscheduled / General', '<NA>': 'Unscheduled / General', '': 'Unscheduled / General'})
+
+        period_summary_list = []
+        for p_val, group in pm_df_temp.groupby('_Group_Period_'):
+            p_str = str(p_val)
+            p_chargers = len(group[pm_chg_col].dropna().unique()) if pm_chg_col and pm_chg_col in group.columns else len(group)
+            p_stations = len(group[pm_stn_col].dropna().unique()) if pm_stn_col and pm_stn_col in group.columns else len(group)
+            p_planning = len(group)
+
+            if pm_st_col and pm_st_col in group.columns:
+                st_u = group[pm_st_col].astype(str).str.strip().str.upper()
+                p_done = int((st_u == 'YES').sum())
+                p_pending = int((st_u == 'NO').sum())
+            else:
+                p_done = int(group['Is_PM_Done'].sum()) if 'Is_PM_Done' in group.columns else 0
+                p_pending = int(group['Is_PM_Pending'].sum()) if 'Is_PM_Pending' in group.columns else 0
+
+            p_eff = (p_done / p_planning * 100) if p_planning > 0 else 0.0
+
+            period_summary_list.append({
+                f'Period ({period_choice})': p_str,
+                'Stations Scheduled': p_stations,
+                'Chargers Scheduled': p_chargers,
+                'PM Planning': p_planning,
+                'PM Done': p_done,
+                'PM Pending': p_pending,
+                'PM Efficiency (%)': round(p_eff, 1)
+            })
+
+        period_summary_df = pd.DataFrame(period_summary_list)
+
+        c_per_chart, c_per_tbl = st.columns([6, 6])
+        with c_per_chart:
+            plot_grouped_bar(
+                df=period_summary_df,
+                x_col=f'Period ({period_choice})',
+                y_cols=['Stations Scheduled', 'PM Done', 'PM Pending'],
+                title=f"Scheduled Stations vs Completion by {period_choice}",
+                colors=['#2563EB', '#16A34A', '#DC2626']
+            )
+
+        with c_per_tbl:
+            st.write(f"##### Scheduled Stations Data Table ({period_choice} Level)")
+            st.dataframe(
+                period_summary_df.style.format({
+                    'Stations Scheduled': '{:,}',
+                    'Chargers Scheduled': '{:,}',
+                    'PM Planning': '{:,}',
+                    'PM Done': '{:,}',
+                    'PM Pending': '{:,}',
+                    'PM Efficiency (%)': '{:.1f}%'
+                }).background_gradient(subset=['PM Efficiency (%)'], cmap='Blues'),
+                use_container_width=True,
+                height=280
+            )
 
         st.markdown("---")
 
