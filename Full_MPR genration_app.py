@@ -132,6 +132,33 @@ def find_col(df, possible_names):
     return None
 
 
+ISSUE_HEADER_KEYWORDS = ['sr no', 'issue id', 'ocpp id', 'issue date', 'issue type', 'severity']
+
+
+def find_header_row(rows, keywords, max_scan=10, min_matches=2):
+    """
+    Locates the real header row when a sheet leads with summary/KPI rows
+    (e.g. 'Total Issues', 654) before the actual column headers.
+    Returns the 0-based index of the best-matching row within the first
+    max_scan rows, falling back to row 0 if nothing scores well enough.
+    """
+    best_idx, best_score = 0, -1
+    for idx, row in enumerate(rows[:max_scan]):
+        cells = [str(c).strip().lower() for c in row if c is not None]
+        score = sum(1 for kw in keywords if any(kw in c for c in cells))
+        if score > best_score:
+            best_idx, best_score = idx, score
+    return best_idx if best_score >= min_matches else 0
+
+
+def rows_to_df(rows, header_idx=0):
+    """Builds a DataFrame from raw sheet rows given the header row's index."""
+    if not rows or header_idx >= len(rows):
+        return pd.DataFrame()
+    headers = make_unique_headers([str(h).strip() if h is not None else f"Unnamed_{i+1}" for i, h in enumerate(rows[header_idx])])
+    return pd.DataFrame([r[:len(headers)] for r in rows[header_idx + 1:]], columns=headers).dropna(how='all')
+
+
 def load_issue_tracker(source):
     preferred_sheets = ['Issue Tracker', 'Issue Data']
     if isinstance(source, pd.DataFrame):
@@ -146,8 +173,8 @@ def load_issue_tracker(source):
             wb.close()
             if not rows:
                 return pd.DataFrame()
-            headers = make_unique_headers([str(h).strip() if h is not None else f"Unnamed_{i+1}" for i, h in enumerate(rows[0])])
-            df = pd.DataFrame([r[:len(headers)] for r in rows[1:]], columns=headers).dropna(how='all')
+            header_idx = find_header_row(rows, ISSUE_HEADER_KEYWORDS)
+            df = rows_to_df(rows, header_idx)
         else:
             df = pd.read_csv(io.BytesIO(source))
     elif hasattr(source, 'name') and source.name.lower().endswith('.csv'):
@@ -167,8 +194,8 @@ def load_issue_tracker(source):
             wb.close()
         if not rows:
             return pd.DataFrame()
-        headers = make_unique_headers([str(h).strip() if h is not None else f"Unnamed_{i+1}" for i, h in enumerate(rows[0])])
-        df = pd.DataFrame([r[:len(headers)] for r in rows[1:]], columns=headers).dropna(how='all')
+        header_idx = find_header_row(rows, ISSUE_HEADER_KEYWORDS)
+        df = rows_to_df(rows, header_idx)
 
     df = ensure_unique_columns(df)
     if 'Issue Date' in df.columns:
@@ -567,7 +594,7 @@ def build_issue_dashboard(wb, issue_df, irange):
     zme_col = find_col(issue_df, ['ZME', 'ZME Name', 'ZME_Name', 'Zone Manager'])
     zme_start = row
     if zme_col and zme_col in issue_df.columns:
-        for zme in sorted(issue_df[zme_col].dropna().unique()):
+        for zme in sorted(issue_df[zme_col].dropna().unique(), key=str):
             zme_sub = issue_df[issue_df[zme_col].astype(str).str.strip() == str(zme)]
             total_val = len(zme_sub)
             open_val = int(zme_sub['_Is_Open_'].sum())
@@ -604,7 +631,7 @@ def build_issue_dashboard(wb, issue_df, irange):
     zone_start = row
     zone_col = find_col(issue_df, ['Zone', 'Zone Name', 'Region'])
     if zone_col and zone_col in issue_df.columns:
-        for zone in sorted(issue_df[zone_col].dropna().unique()):
+        for zone in sorted(issue_df[zone_col].dropna().unique(), key=str):
             zone_sub = issue_df[issue_df[zone_col].astype(str).str.strip() == str(zone)]
             total_val = len(zone_sub)
             open_val = int(zone_sub['_Is_Open_'].sum())
