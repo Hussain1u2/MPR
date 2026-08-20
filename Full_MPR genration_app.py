@@ -470,7 +470,7 @@ def write_data_sheet(wb, name, df, table_name, date_cols):
 
     last_row = len(clean_df) + 1
     table = Table(displayName=table_name, ref=f"A1:{get_column_letter(len(clean_df.columns))}{last_row}")
-    table.tableStyleInfo = TableStyleInfo(name='TableStyleMedium9', showRowStripes=True)
+    table.tableStyleInfo = TableStyleInfo(name='TableStyleMedium3', showRowStripes=True)
     ws.add_table(table)
     ws.freeze_panes = 'A2'
     return ws, last_row
