@@ -5,6 +5,7 @@ from datetime import datetime
 import pandas as pd
 import openpyxl
 from openpyxl import Workbook
+from openpyxl.chart import BarChart, PieChart, Reference
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
@@ -532,10 +533,12 @@ def build_issue_dashboard(wb, issue_df, irange):
         issue_df['_Is_Closed_Without_'] = issue_df['_Is_Closed_'] & issue_df['_Is_Without_']
 
     row = 4
+    zme_header_row = row + 1
     row = section_title(ws, row, '1. Issue Summary & CM Efficiency by ZME', 7)
     row = header_row(ws, row, ['ZME Name', 'Faults Received', 'Open Faults', 'Closed Faults', 'Closed Within TAT', 'Closed Without TAT', 'CM Efficiency %'])
 
     zme_col = find_col(issue_df, ['ZME', 'ZME Name', 'ZME_Name', 'Zone Manager'])
+    zme_start = row
     if zme_col and zme_col in issue_df.columns:
         for zme in sorted(issue_df[zme_col].dropna().unique()):
             zme_sub = issue_df[issue_df[zme_col].astype(str).str.strip() == str(zme)]
@@ -548,10 +551,29 @@ def build_issue_dashboard(wb, issue_df, irange):
 
             row = data_row(ws, row, [str(zme), total_val, open_val, closed_val, within_val, without_val, eff_val], pct_cols={6})
 
+    zme_end = row - 1
+    if zme_end >= zme_start:
+        chart1 = BarChart()
+        chart1.type = "col"
+        chart1.style = 10
+        chart1.title = "Faults Received vs Open vs Closed Within TAT by ZME"
+        chart1.y_axis.title = "Fault Count"
+        chart1.x_axis.title = "ZME"
+
+        data1 = Reference(ws, min_col=2, min_row=zme_header_row, max_col=5, max_row=zme_end)
+        cats1 = Reference(ws, min_col=1, min_row=zme_start, max_row=zme_end)
+        chart1.add_data(data1, titles_from_data=True)
+        chart1.set_categories(cats1)
+        chart1.width = 16
+        chart1.height = 9
+        ws.add_chart(chart1, "I4")
+
     row += 1
+    zone_header_row = row + 1
     row = section_title(ws, row, '2. Issue Summary & CM Efficiency by Zone', 7)
     row = header_row(ws, row, ['Zone', 'Faults Received', 'Open Faults', 'Closed Faults', 'Closed Within TAT', 'Closed Without TAT', 'CM Efficiency %'])
 
+    zone_start = row
     zone_col = find_col(issue_df, ['Zone', 'Zone Name', 'Region'])
     if zone_col and zone_col in issue_df.columns:
         for zone in sorted(issue_df[zone_col].dropna().unique()):
@@ -564,6 +586,23 @@ def build_issue_dashboard(wb, issue_df, irange):
             eff_val = (within_val / closed_val) if closed_val > 0 else 0.0
 
             row = data_row(ws, row, [str(zone), total_val, open_val, closed_val, within_val, without_val, eff_val], pct_cols={6})
+
+    zone_end = row - 1
+    if zone_end >= zone_start:
+        chart2 = BarChart()
+        chart2.type = "col"
+        chart2.style = 11
+        chart2.title = "Fault Breakdown by Zone"
+        chart2.y_axis.title = "Fault Count"
+        chart2.x_axis.title = "Zone"
+
+        data2 = Reference(ws, min_col=2, min_row=zone_header_row, max_col=5, max_row=zone_end)
+        cats2 = Reference(ws, min_col=1, min_row=zone_start, max_row=zone_end)
+        chart2.add_data(data2, titles_from_data=True)
+        chart2.set_categories(cats2)
+        chart2.width = 16
+        chart2.height = 9
+        ws.add_chart(chart2, f"I{zone_header_row - 1}")
 
     row += 1
     row = section_title(ws, row, '3. Repetitive Faults (same Station ID + Issue Sub-Type, 2+ occurrences)', 5)
@@ -603,19 +642,45 @@ def build_issue_dashboard(wb, issue_df, irange):
             row = data_row(ws, row, ['None found in current data'] + [''] * (len(headers) - 1))
 
     row += 1
+    status_header_row = row + 1
     row = section_title(ws, row, '4. Status Breakdown', 2)
     row = header_row(ws, row, ['Status', 'Count'])
+    status_start = row
     if status_col and status_col in issue_df.columns:
         for status, cnt in issue_df[status_col].dropna().value_counts().items():
             row = data_row(ws, row, [str(status), int(cnt)])
+    status_end = row - 1
+    if status_end >= status_start:
+        pie_status = PieChart()
+        pie_status.title = "Status Breakdown"
+        data_s = Reference(ws, min_col=2, min_row=status_header_row, max_row=status_end)
+        cats_s = Reference(ws, min_col=1, min_row=status_start, max_row=status_end)
+        pie_status.add_data(data_s, titles_from_data=True)
+        pie_status.set_categories(cats_s)
+        pie_status.width = 14
+        pie_status.height = 8
+        ws.add_chart(pie_status, f"D{status_header_row - 1}")
 
     row += 1
+    sev_header_row = row + 1
     row = section_title(ws, row, '5. Severity Breakdown', 2)
     row = header_row(ws, row, ['Severity', 'Count'])
+    sev_start = row
     sev_col = find_col(issue_df, ['Severity', 'Ticket Severity', 'Priority'])
     if sev_col and sev_col in issue_df.columns:
         for sev, cnt in issue_df[sev_col].dropna().value_counts().items():
             row = data_row(ws, row, [str(sev), int(cnt)])
+    sev_end = row - 1
+    if sev_end >= sev_start:
+        pie_sev = PieChart()
+        pie_sev.title = "Severity Share"
+        data_sv = Reference(ws, min_col=2, min_row=sev_header_row, max_row=sev_end)
+        cats_sv = Reference(ws, min_col=1, min_row=sev_start, max_row=sev_end)
+        pie_sev.add_data(data_sv, titles_from_data=True)
+        pie_sev.set_categories(cats_sv)
+        pie_sev.width = 14
+        pie_sev.height = 8
+        ws.add_chart(pie_sev, f"D{sev_header_row - 1}")
 
     row += 1
     row = section_title(ws, row, '6. Customer Filter (B2B / B2C)', 2)
@@ -647,6 +712,7 @@ def build_pm_dashboard(wb, pm_df, prange):
     adv_col = find_col(pm_df, ['Advance PM Done', 'Advance PM'])
 
     row = 4
+    pm_header_row = row + 1
     if zme_col and zme_col in pm_df.columns:
         group_cols = [zme_col]
         if zone_col and zone_col in pm_df.columns:
@@ -680,8 +746,26 @@ def build_pm_dashboard(wb, pm_df, prange):
         row = section_title(ws, row, 'PM Summary by ZME', 9)
         row = header_row(ws, row, ['ZME Name', 'Zone', 'Total Chargers', 'Total Stations', 'PM Planning',
                                     'PM Done', 'PM Pending', 'Advance PM Done', 'PM Efficiency'])
+        pm_start = row
         for item in sorted(zme_summary, key=lambda x: x[4], reverse=True):
             row = data_row(ws, row, list(item), pct_cols={8})
+
+        pm_end = row - 1
+        if pm_end >= pm_start:
+            chart_pm = BarChart()
+            chart_pm.type = "col"
+            chart_pm.style = 10
+            chart_pm.title = "PM Planning vs PM Done by ZME"
+            chart_pm.y_axis.title = "PM Work Orders"
+            chart_pm.x_axis.title = "ZME"
+
+            data_pm = Reference(ws, min_col=5, min_row=pm_header_row, max_col=7, max_row=pm_end)
+            cats_pm = Reference(ws, min_col=1, min_row=pm_start, max_row=pm_end)
+            chart_pm.add_data(data_pm, titles_from_data=True)
+            chart_pm.set_categories(cats_pm)
+            chart_pm.width = 18
+            chart_pm.height = 10
+            ws.add_chart(chart_pm, "K4")
 
     for col, width in zip('ABCDEFGHIJ', [18, 10, 14, 14, 13, 11, 12, 16, 14, 10]):
         ws.column_dimensions[col].width = width
