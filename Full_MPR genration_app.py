@@ -300,8 +300,31 @@ def load_pm_tracker(source):
     df = ensure_unique_columns(df)
     if 'Due Date' in df.columns:
         df['Due Date Parsed'] = pd.to_datetime(df['Due Date'], errors='coerce')
+    elif 'Due Date Parsed' not in df.columns:
+        due_col_found = find_col(df, ['Due Date', 'PM Due Date', 'Scheduled Date'])
+        if due_col_found:
+            df['Due Date Parsed'] = pd.to_datetime(df[due_col_found], errors='coerce')
+
     if 'Actual Completion Date' in df.columns:
         df['Actual Completion Date Parsed'] = pd.to_datetime(df['Actual Completion Date'], errors='coerce')
+    elif 'Actual Completion Date Parsed' not in df.columns:
+        act_col_found = find_col(df, ['Actual Completion Date', 'Completion Date', 'PM Completion Date'])
+        if act_col_found:
+            df['Actual Completion Date Parsed'] = pd.to_datetime(df[act_col_found], errors='coerce')
+
+    go_live_col = find_col(df, ['Go Live Date', 'Go-Live Date', 'Live Date', 'Commissioning Date', 'Go Live'])
+    if go_live_col and go_live_col in df.columns:
+        df['Go Live Date Parsed'] = pd.to_datetime(df[go_live_col], errors='coerce')
+
+    # Derived Period Columns for Date, Month, Quarter, Year grouping
+    if 'Due Date Parsed' in df.columns:
+        df['Scheduled Date'] = df['Due Date Parsed'].dt.date
+        df['Scheduled Month'] = df['Due Date Parsed'].dt.strftime('%b-%Y')
+        df['Scheduled Year'] = df['Due Date Parsed'].dt.year.astype('Int64').astype(str)
+        if 'Quarter' not in df.columns or df['Quarter'].dropna().empty:
+            df['Scheduled Quarter'] = 'Q' + df['Due Date Parsed'].dt.quarter.astype(str)
+        else:
+            df['Scheduled Quarter'] = df['Quarter']
 
     if 'PM Status' in df.columns:
         pm_upper = df['PM Status'].astype(str).str.upper()
@@ -311,6 +334,32 @@ def load_pm_tracker(source):
         df['Is_PM_Done'] = False
         df['Is_PM_Pending'] = False
 
+    # Compute OCPP / Charger Compliance Status
+    def get_pm_compliance(row):
+        due_dt = row.get('Due Date Parsed') if 'Due Date Parsed' in row else None
+        act_dt = row.get('Actual Completion Date Parsed') if 'Actual Completion Date Parsed' in row else None
+        pm_st = str(row.get('PM Status', '')).strip().upper()
+        is_done = (pm_st == 'YES') or (pd.notna(act_dt))
+        
+        if is_done:
+            if pd.notna(act_dt) and pd.notna(due_dt):
+                if act_dt < due_dt:
+                    return '🟡 Advance PM Done (Before Schedule)'
+                elif act_dt.month == due_dt.month and act_dt.year == due_dt.year:
+                    return '🟢 On-Time (As Scheduled)'
+                elif act_dt > due_dt:
+                    return '🟠 Completed Delayed'
+                else:
+                    return '🟢 On-Time (As Scheduled)'
+            else:
+                return '🟢 Completed'
+        else:
+            if pd.notna(due_dt) and datetime.now() > due_dt:
+                return '🔴 Overdue / Breached Schedule'
+            else:
+                return '⚪ Pending (In Schedule)'
+
+    df['PM Compliance Status'] = df.apply(get_pm_compliance, axis=1)
     return df
 
 
@@ -420,38 +469,68 @@ def build_issue_dashboard(wb, issue_df, irange):
     ws.merge_cells('A2:H2')
 
     row = 4
-    row = section_title(ws, row, '1. Issue Summary by ZME', 5)
-    row = header_row(ws, row, ['ZME Name', 'Total Issues', 'Within TAT', 'Without TAT', 'TAT Efficiency'])
+    row = section_title(ws, row, '1. Issue Summary & CM Efficiency by ZME', 7)
+    row = header_row(ws, row, ['ZME Name', 'Faults Received', 'Open Faults', 'Closed Faults', 'Closed Within TAT', 'Closed Breached TAT', 'CM Efficiency %'])
     if 'ZME' in issue_df.columns:
         for zme in sorted(issue_df['ZME'].dropna().unique()):
             total = f'=COUNTIFS({irange("ZME")},A{row})'
+            open_f = f'=COUNTIFS({irange("ZME")},A{row},{irange("Status")},"<>Closed")' if 'Status' in issue_df.columns else f'=COUNTIFS({irange("ZME")},A{row},{irange("TAT Compliance")},"<>Yes")'
+            closed_f = f'=B{row}-C{row}'
             within = f'=COUNTIFS({irange("ZME")},A{row},{irange("TAT Compliance")},"Yes")'
             without = f'=COUNTIFS({irange("ZME")},A{row},{irange("TAT Compliance")},"No")'
-            eff = f'=IFERROR(C{row}/B{row},0)'
-            row = data_row(ws, row, [zme, total, within, without, eff], pct_cols={4})
+            eff = f'=IFERROR(E{row}/D{row},0)'
+            row = data_row(ws, row, [zme, total, open_f, closed_f, within, without, eff], pct_cols={6})
 
     row += 1
-    row = section_title(ws, row, '2. Issue Summary by Zone (CM Efficiency)', 4)
-    row = header_row(ws, row, ['Zone', 'Total Issues', 'CM Efficiency (Within TAT)', 'CM Efficiency (Without TAT)'])
+    row = section_title(ws, row, '2. Issue Summary & CM Efficiency by Zone', 7)
+    row = header_row(ws, row, ['Zone', 'Faults Received', 'Open Faults', 'Closed Faults', 'Closed Within TAT', 'Closed Breached TAT', 'CM Efficiency %'])
     if 'Zone' in issue_df.columns:
         for zone in sorted(issue_df['Zone'].dropna().unique()):
             total = f'=COUNTIFS({irange("Zone")},A{row})'
-            within = f'=IFERROR(COUNTIFS({irange("Zone")},A{row},{irange("TAT Compliance")},"Yes")/B{row},0)'
-            without = f'=IFERROR(COUNTIFS({irange("Zone")},A{row},{irange("TAT Compliance")},"No")/B{row},0)'
-            row = data_row(ws, row, [zone, total, within, without], pct_cols={2, 3})
+            open_f = f'=COUNTIFS({irange("Zone")},A{row},{irange("Status")},"<>Closed")' if 'Status' in issue_df.columns else f'=COUNTIFS({irange("Zone")},A{row},{irange("TAT Compliance")},"<>Yes")'
+            closed_f = f'=B{row}-C{row}'
+            within = f'=COUNTIFS({irange("Zone")},A{row},{irange("TAT Compliance")},"Yes")'
+            without = f'=COUNTIFS({irange("Zone")},A{row},{irange("TAT Compliance")},"No")'
+            eff = f'=IFERROR(E{row}/D{row},0)'
+            row = data_row(ws, row, [zone, total, open_f, closed_f, within, without, eff], pct_cols={6})
 
     row += 1
-    row = section_title(ws, row, '3. Repetitive Faults (same Station ID + Issue Sub-Type, 2+ occurrences)', 3)
-    row = header_row(ws, row, ['Station ID', 'Issue Sub-Type', 'Occurrences'])
+    row = section_title(ws, row, '3. Repetitive Faults (same Station ID + Issue Sub-Type, 2+ occurrences)', 5)
+    stn_name_col = find_col(issue_df, ['Station Name', 'Station_Name', 'Site Name'])
+    zme_name_col = find_col(issue_df, ['ZME', 'ZME Name', 'ZME_Name', 'Zone Manager'])
+    
+    headers = ['Station ID']
+    if stn_name_col:
+        headers.append('Station Name')
+    if zme_name_col:
+        headers.append('ZME Name')
+    headers.extend(['Issue Sub-Type', 'Occurrences'])
+    
+    row = header_row(ws, row, headers)
     if 'Station ID' in issue_df.columns and 'Issue Sub-Type' in issue_df.columns:
-        pair_counts = issue_df.groupby(['Station ID', 'Issue Sub-Type']).size()
-        repeats = pair_counts[pair_counts >= 2].index.tolist()
-        if repeats:
-            for station_id, subtype in repeats:
-                cnt = f'=COUNTIFS({irange("Station ID")},A{row},{irange("Issue Sub-Type")},B{row})'
-                row = data_row(ws, row, [station_id, subtype, cnt])
+        group_keys = ['Station ID']
+        if stn_name_col:
+            group_keys.append(stn_name_col)
+        if zme_name_col:
+            group_keys.append(zme_name_col)
+        group_keys.append('Issue Sub-Type')
+
+        pair_counts = issue_df.groupby(group_keys).size().reset_index(name='Occurrences')
+        repeats = pair_counts[pair_counts['Occurrences'] >= 2]
+        if not repeats.empty:
+            for idx, r in repeats.iterrows():
+                vals = [r['Station ID']]
+                if stn_name_col:
+                    vals.append(r[stn_name_col])
+                if zme_name_col:
+                    vals.append(r[zme_name_col])
+                vals.extend([
+                    r['Issue Sub-Type'],
+                    f'=COUNTIFS({irange("Station ID")},"{r["Station ID"]}",{irange("Issue Sub-Type")},"{r["Issue Sub-Type"]}")'
+                ])
+                row = data_row(ws, row, vals)
         else:
-            row = data_row(ws, row, ['None found in current data', '', ''])
+            row = data_row(ws, row, ['None found in current data'] + [''] * (len(headers) - 1))
 
     row += 1
     row = section_title(ws, row, '4. Status Breakdown', 2)
@@ -914,32 +993,96 @@ def run_streamlit_app():
     # Sidebar Interactive Filters
     st.sidebar.markdown("#### 2. Dashboard Filters")
 
+    # 1. Customer Segment Filter
+    issue_seg_col = find_col(raw_issue_df, ['B2B/ B2C', 'B2B/B2C', 'Segment', 'Customer Segment'])
+    pm_seg_col = find_col(raw_pm_df, ['B2B/ B2C', 'B2B/B2C', 'Segment', 'Customer Segment'])
+
     segment_options = ["All Segments"]
-    if 'B2B/ B2C' in raw_issue_df.columns:
-        segment_options += sorted(raw_issue_df['B2B/ B2C'].dropna().unique().tolist())
+    found_segments = set()
+    if issue_seg_col and issue_seg_col in raw_issue_df.columns:
+        found_segments.update(raw_issue_df[issue_seg_col].dropna().astype(str).str.strip().unique())
+    if pm_seg_col and pm_seg_col in raw_pm_df.columns:
+        found_segments.update(raw_pm_df[pm_seg_col].dropna().astype(str).str.strip().unique())
+    segment_options += sorted(list(found_segments))
     selected_segment = st.sidebar.selectbox("Filter by Customer Segment (B2B / B2C):", segment_options)
 
-    min_date, max_date = None, None
-    if 'Issue Date Parsed' in raw_issue_df.columns and not raw_issue_df['Issue Date Parsed'].dropna().empty:
-        min_date = raw_issue_df['Issue Date Parsed'].min().date()
-        max_date = raw_issue_df['Issue Date Parsed'].max().date()
+    # 2. Zone Filter
+    issue_zone_col = find_col(raw_issue_df, ['Zone', 'Zone Name', 'Region'])
+    pm_zone_col = find_col(raw_pm_df, ['Zone', 'Zone Name', 'Region'])
 
+    zone_options = ["All Zones"]
+    found_zones = set()
+    if issue_zone_col and issue_zone_col in raw_issue_df.columns:
+        found_zones.update(raw_issue_df[issue_zone_col].dropna().astype(str).str.strip().unique())
+    if pm_zone_col and pm_zone_col in raw_pm_df.columns:
+        found_zones.update(raw_pm_df[pm_zone_col].dropna().astype(str).str.strip().unique())
+    zone_options += sorted(list(found_zones))
+    selected_zone = st.sidebar.selectbox("Filter by Zone:", zone_options)
+
+    # 3. Date Selection Filter
+    all_dates = []
+    if 'Issue Date Parsed' in raw_issue_df.columns:
+        all_dates.extend(raw_issue_df['Issue Date Parsed'].dropna().dt.date.tolist())
+    if 'Due Date Parsed' in raw_pm_df.columns:
+        all_dates.extend(raw_pm_df['Due Date Parsed'].dropna().dt.date.tolist())
+    if 'Actual Completion Date Parsed' in raw_pm_df.columns:
+        all_dates.extend(raw_pm_df['Actual Completion Date Parsed'].dropna().dt.date.tolist())
+
+    min_date, max_date = None, None
+    if all_dates:
+        min_date = min(all_dates)
+        max_date = max(all_dates)
+
+    selected_dates = None
     if min_date and max_date:
-        selected_dates = st.sidebar.date_input("Filter by Issue Date Range:", value=(min_date, max_date), min_value=min_date, max_value=max_date)
-    else:
-        selected_dates = None
+        if min_date == max_date:
+            selected_dates = st.sidebar.date_input("Filter by Date Range:", value=(min_date, max_date))
+        else:
+            selected_dates = st.sidebar.date_input("Filter by Date Range:", value=(min_date, max_date), min_value=min_date, max_value=max_date)
+
+    # Parse date range robustly
+    start_d, end_d = None, None
+    if selected_dates:
+        if isinstance(selected_dates, (tuple, list)):
+            if len(selected_dates) == 2:
+                start_d, end_d = selected_dates[0], selected_dates[1]
+            elif len(selected_dates) == 1:
+                start_d = end_d = selected_dates[0]
+        else:
+            start_d = end_d = selected_dates
 
     # Apply Filters to Issue Dataframe
     filtered_issue_df = raw_issue_df.copy()
-    if selected_segment != "All Segments" and 'B2B/ B2C' in filtered_issue_df.columns:
-        filtered_issue_df = filtered_issue_df[filtered_issue_df['B2B/ B2C'] == selected_segment]
+    if selected_segment != "All Segments" and issue_seg_col and issue_seg_col in filtered_issue_df.columns:
+        filtered_issue_df = filtered_issue_df[filtered_issue_df[issue_seg_col].astype(str).str.strip() == selected_segment]
 
-    if selected_dates and isinstance(selected_dates, tuple) and len(selected_dates) == 2:
-        start_d, end_d = selected_dates
-        if 'Issue Date Parsed' in filtered_issue_df.columns:
-            filtered_issue_df = filtered_issue_df[
-                (filtered_issue_df['Issue Date Parsed'].dt.date >= start_d) &
-                (filtered_issue_df['Issue Date Parsed'].dt.date <= end_d)
+    if selected_zone != "All Zones" and issue_zone_col and issue_zone_col in filtered_issue_df.columns:
+        filtered_issue_df = filtered_issue_df[filtered_issue_df[issue_zone_col].astype(str).str.strip() == selected_zone]
+
+    if start_d and end_d and 'Issue Date Parsed' in filtered_issue_df.columns:
+        filtered_issue_df = filtered_issue_df[
+            (filtered_issue_df['Issue Date Parsed'].dt.date >= start_d) &
+            (filtered_issue_df['Issue Date Parsed'].dt.date <= end_d)
+        ]
+
+    # Apply Filters to PM Dataframe
+    filtered_pm_df = raw_pm_df.copy()
+    if selected_segment != "All Segments" and pm_seg_col and pm_seg_col in filtered_pm_df.columns:
+        filtered_pm_df = filtered_pm_df[filtered_pm_df[pm_seg_col].astype(str).str.strip() == selected_segment]
+
+    if selected_zone != "All Zones" and pm_zone_col and pm_zone_col in filtered_pm_df.columns:
+        filtered_pm_df = filtered_pm_df[filtered_pm_df[pm_zone_col].astype(str).str.strip() == selected_zone]
+
+    if start_d and end_d:
+        pm_date_col = find_col(filtered_pm_df, ['Due Date Parsed', 'Actual Completion Date Parsed', 'Due Date'])
+        if pm_date_col and pm_date_col in filtered_pm_df.columns:
+            if not pd.api.types.is_datetime64_any_dtype(filtered_pm_df[pm_date_col]):
+                temp_dates = pd.to_datetime(filtered_pm_df[pm_date_col], errors='coerce').dt.date
+            else:
+                temp_dates = filtered_pm_df[pm_date_col].dt.date
+            filtered_pm_df = filtered_pm_df[
+                (temp_dates >= start_d) &
+                (temp_dates <= end_d)
             ]
 
     st.sidebar.markdown("---")
@@ -972,92 +1115,133 @@ def run_streamlit_app():
         st.markdown('<div class="section-header">📊 Operational Issue & SLA Analytics Performance</div>', unsafe_allow_html=True)
 
         total_issues = len(filtered_issue_df)
+        status_col = find_col(filtered_issue_df, ['Status', 'Ticket Status', 'Issue Status', 'State'])
         tat_col = find_col(filtered_issue_df, ['TAT Compliance', 'SLA Compliance', 'Compliance', 'TAT Status'])
         
-        if tat_col:
-            tat_upper = filtered_issue_df[tat_col].astype(str).str.strip().str.upper()
-            within_tat = int((tat_upper == 'YES').sum())
-            without_tat = int((tat_upper == 'NO').sum())
+        # Prepare status helper columns
+        if status_col and status_col in filtered_issue_df.columns:
+            s_status = filtered_issue_df[status_col].astype(str).str.strip().str.upper()
+            is_closed = s_status.isin(['CLOSED', 'RESOLVED'])
+            filtered_issue_df['_Is_Open_'] = ~is_closed
+            filtered_issue_df['_Is_Closed_'] = is_closed
         else:
-            within_tat = int(filtered_issue_df['Is_TAT_Compliant'].sum()) if 'Is_TAT_Compliant' in filtered_issue_df.columns else 0
-            without_tat = int(filtered_issue_df['Is_TAT_Breached'].sum()) if 'Is_TAT_Breached' in filtered_issue_df.columns else 0
+            filtered_issue_df['_Is_Closed_'] = True
+            filtered_issue_df['_Is_Open_'] = False
 
-        tat_eff = (within_tat / total_issues * 100) if total_issues > 0 else 0.0
+        # Prepare TAT compliance helper columns
+        if tat_col and tat_col in filtered_issue_df.columns:
+            s_tat = filtered_issue_df[tat_col].astype(str).str.strip().str.upper()
+            filtered_issue_df['_Is_Within_'] = (s_tat == 'YES')
+            filtered_issue_df['_Is_Without_'] = (s_tat == 'NO')
+            filtered_issue_df['_Is_Closed_Within_'] = filtered_issue_df['_Is_Closed_'] & (s_tat == 'YES')
+            filtered_issue_df['_Is_Closed_Without_'] = filtered_issue_df['_Is_Closed_'] & (s_tat == 'NO')
+        else:
+            filtered_issue_df['_Is_Within_'] = filtered_issue_df.get('Is_TAT_Compliant', False)
+            filtered_issue_df['_Is_Without_'] = filtered_issue_df.get('Is_TAT_Breached', False)
+            filtered_issue_df['_Is_Closed_Within_'] = filtered_issue_df['_Is_Closed_'] & filtered_issue_df['_Is_Within_']
+            filtered_issue_df['_Is_Closed_Without_'] = filtered_issue_df['_Is_Closed_'] & filtered_issue_df['_Is_Without_']
 
-        # High-Impact KPI Row
-        c1, c2, c3, c4 = st.columns(4)
+        total_open = int(filtered_issue_df['_Is_Open_'].sum())
+        total_closed = int(filtered_issue_df['_Is_Closed_'].sum())
+        closed_within = int(filtered_issue_df['_Is_Closed_Within_'].sum())
+        closed_without = int(filtered_issue_df['_Is_Closed_Without_'].sum())
+
+        # Formula: CM Efficiency = Number of Faults closed within TAT / Total closed faults
+        cm_eff_closed = (closed_within / total_closed * 100) if total_closed > 0 else 0.0
+
+        # High-Impact KPI Row (6 Columns)
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
         with c1:
             st.markdown(f"""
                 <div class="metric-card darkred">
-                    <div class="metric-label">Total Issues Logged</div>
+                    <div class="metric-label">Faults Received</div>
                     <div class="metric-val">{total_issues:,}</div>
-                    <div class="metric-sub">Active & Closed Tickets</div>
+                    <div class="metric-sub">Total Tickets Logged</div>
                 </div>
             """, unsafe_allow_html=True)
         with c2:
             st.markdown(f"""
-                <div class="metric-card green">
-                    <div class="metric-label">Within TAT</div>
-                    <div class="metric-val">{within_tat:,}</div>
-                    <div class="metric-sub">SLA Compliant</div>
+                <div class="metric-card amber">
+                    <div class="metric-label">Open Faults</div>
+                    <div class="metric-val">{total_open:,}</div>
+                    <div class="metric-sub">Pending / In-Progress</div>
                 </div>
             """, unsafe_allow_html=True)
         with c3:
             st.markdown(f"""
-                <div class="metric-card red">
-                    <div class="metric-label">Without TAT</div>
-                    <div class="metric-val">{without_tat:,}</div>
-                    <div class="metric-sub">SLA Breached</div>
+                <div class="metric-card grey">
+                    <div class="metric-label">Closed Faults</div>
+                    <div class="metric-val">{total_closed:,}</div>
+                    <div class="metric-sub">Resolved Tickets</div>
                 </div>
             """, unsafe_allow_html=True)
         with c4:
             st.markdown(f"""
-                <div class="metric-card {'green' if tat_eff >= 85 else 'amber'}">
-                    <div class="metric-label">TAT Efficiency %</div>
-                    <div class="metric-val">{tat_eff:.1f}%</div>
-                    <div class="metric-sub">Target Benchmark: ≥ 85.0%</div>
+                <div class="metric-card green">
+                    <div class="metric-label">Closed Within TAT</div>
+                    <div class="metric-val">{closed_within:,}</div>
+                    <div class="metric-sub">SLA Compliant</div>
+                </div>
+            """, unsafe_allow_html=True)
+        with c5:
+            st.markdown(f"""
+                <div class="metric-card red">
+                    <div class="metric-label">Closed Breached TAT</div>
+                    <div class="metric-val">{closed_without:,}</div>
+                    <div class="metric-sub">SLA Breached</div>
+                </div>
+            """, unsafe_allow_html=True)
+        with c6:
+            st.markdown(f"""
+                <div class="metric-card {'green' if cm_eff_closed >= 85 else 'amber'}">
+                    <div class="metric-label">CM Efficiency</div>
+                    <div class="metric-val">{cm_eff_closed:.1f}%</div>
+                    <div class="metric-sub">Closed Within TAT / Total Closed</div>
                 </div>
             """, unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # Prepare helper boolean columns in filtered_issue_df if missing
-        if tat_col:
-            s_tat = filtered_issue_df[tat_col].astype(str).str.strip().str.upper()
-            filtered_issue_df['_Is_Within_'] = (s_tat == 'YES')
-            filtered_issue_df['_Is_Without_'] = (s_tat == 'NO')
-        else:
-            filtered_issue_df['_Is_Within_'] = filtered_issue_df.get('Is_TAT_Compliant', False)
-            filtered_issue_df['_Is_Without_'] = filtered_issue_df.get('Is_TAT_Breached', False)
-
-        # 1. ZME Summary: Chart & Table Side-by-Side
-        st.markdown('<div class="section-header">1. ZME Performance & TAT Efficiency Breakdown</div>', unsafe_allow_html=True)
+        # 1. ZME Performance & CM Efficiency Breakdown
+        st.markdown('<div class="section-header">1. ZME Performance & CM Efficiency Breakdown</div>', unsafe_allow_html=True)
         col_zme_c, col_zme_t = st.columns([6, 6])
         zme_col = find_col(filtered_issue_df, ['ZME', 'ZME Name', 'ZME_Name', 'Zone Manager'])
 
         if zme_col:
             zme_df = filtered_issue_df.groupby(zme_col).agg(
-                Total_Issues=(zme_col, 'count'),
-                Within_TAT=('_Is_Within_', 'sum'),
-                Without_TAT=('_Is_Without_', 'sum')
+                Faults_Received=(zme_col, 'count'),
+                Open_Faults=('_Is_Open_', 'sum'),
+                Closed_Faults=('_Is_Closed_', 'sum'),
+                Closed_Within_TAT=('_Is_Closed_Within_', 'sum'),
+                Closed_Breached_TAT=('_Is_Closed_Without_', 'sum')
             ).reset_index()
-            zme_df['TAT Efficiency %'] = (zme_df['Within_TAT'] / zme_df['Total_Issues'] * 100).round(1)
-            zme_df = zme_df.rename(columns={zme_col: 'ZME Name'}).sort_values(by='Total_Issues', ascending=False)
+
+            # CM Efficiency % = Closed Within TAT / Total Closed Faults
+            zme_df['CM Efficiency %'] = (zme_df['Closed_Within_TAT'] / zme_df['Closed_Faults'].replace(0, pd.NA) * 100).fillna(0.0).round(1)
+            zme_df = zme_df.rename(columns={zme_col: 'ZME Name'}).sort_values(by='Faults_Received', ascending=False)
 
             with col_zme_c:
-                plot_vertical_bar(zme_df, x_col='ZME Name', y_col='Total_Issues', title="Total Issues Logged by ZME", color_hex="#2563EB")
+                plot_grouped_bar(
+                    df=zme_df,
+                    x_col='ZME Name',
+                    y_cols=['Faults_Received', 'Open_Faults', 'Closed_Within_TAT'],
+                    title="Faults Received vs Open vs Closed Within TAT by ZME",
+                    colors=['#2563EB', '#F59E0B', '#16A34A']
+                )
 
             with col_zme_t:
-                st.write("##### 📊 ZME SLA Data Table")
+                st.write("##### 📊 ZME Fault & CM Efficiency Table")
                 st.dataframe(
-                    zme_df.style.format({
-                        'Total_Issues': '{:,}',
-                        'Within_TAT': '{:,}',
-                        'Without_TAT': '{:,}',
-                        'TAT Efficiency %': '{:.1f}%'
-                    }).background_gradient(subset=['TAT Efficiency %'], cmap='Blues'),
+                    zme_df[['ZME Name', 'Faults_Received', 'Open_Faults', 'Closed_Faults', 'Closed_Within_TAT', 'Closed_Breached_TAT', 'CM Efficiency %']].style.format({
+                        'Faults_Received': '{:,}',
+                        'Open_Faults': '{:,}',
+                        'Closed_Faults': '{:,}',
+                        'Closed_Within_TAT': '{:,}',
+                        'Closed_Breached_TAT': '{:,}',
+                        'CM Efficiency %': '{:.1f}%'
+                    }).background_gradient(subset=['CM Efficiency %'], cmap='Blues'),
                     use_container_width=True,
-                    height=290
+                    height=300
                 )
         else:
             st.info("ℹ️ ZME column not found in dataset.")
@@ -1070,10 +1254,10 @@ def run_streamlit_app():
         with col_sla_chart:
             st.markdown('<div class="section-header">🍩 2. SLA Compliance Ratio (Pie Chart)</div>', unsafe_allow_html=True)
             plot_pie_chart(
-                labels=['Within TAT (Compliant)', 'Without TAT (Breached)'],
-                values=[within_tat, without_tat],
-                title="Overall SLA Compliance Share",
-                colors=['#10B981', '#EF4444'],
+                labels=['Closed Within TAT', 'Closed Breached TAT', 'Open Faults'],
+                values=[closed_within, closed_without, total_open],
+                title="Overall Fault Resolution Share",
+                colors=['#16A34A', '#EF4444', '#F59E0B'],
                 hole=0.45
             )
 
@@ -1082,28 +1266,33 @@ def run_streamlit_app():
             zone_col = find_col(filtered_issue_df, ['Zone', 'Zone Name', 'Region'])
             if zone_col:
                 zone_df = filtered_issue_df.groupby(zone_col).agg(
-                    Total_Issues=(zone_col, 'count'),
-                    Within_TAT=('_Is_Within_', 'sum'),
-                    Without_TAT=('_Is_Without_', 'sum')
+                    Faults_Received=(zone_col, 'count'),
+                    Open_Faults=('_Is_Open_', 'sum'),
+                    Closed_Faults=('_Is_Closed_', 'sum'),
+                    Closed_Within_TAT=('_Is_Closed_Within_', 'sum'),
+                    Closed_Breached_TAT=('_Is_Closed_Without_', 'sum')
                 ).reset_index()
-                zone_df['CM Efficiency (Within TAT) %'] = (zone_df['Within_TAT'] / zone_df['Total_Issues'] * 100).round(1)
-                zone_df['CM Efficiency (Without TAT) %'] = (zone_df['Without_TAT'] / zone_df['Total_Issues'] * 100).round(1)
-                zone_df = zone_df.rename(columns={zone_col: 'Zone'}).sort_values(by='Total_Issues', ascending=False)
+
+                zone_df['CM Efficiency %'] = (zone_df['Closed_Within_TAT'] / zone_df['Closed_Faults'].replace(0, pd.NA) * 100).fillna(0.0).round(1)
+                zone_df = zone_df.rename(columns={zone_col: 'Zone'}).sort_values(by='Faults_Received', ascending=False)
 
                 plot_grouped_bar(
                     df=zone_df,
                     x_col='Zone',
-                    y_cols=['Within_TAT', 'Without_TAT'],
-                    title="Work Orders Within vs Without TAT by Zone",
-                    colors=['#10B981', '#EF4444']
+                    y_cols=['Faults_Received', 'Open_Faults', 'Closed_Within_TAT'],
+                    title="Faults Received vs Open vs Closed Within TAT by Zone",
+                    colors=['#2563EB', '#F59E0B', '#16A34A']
                 )
 
                 st.dataframe(
-                    zone_df[['Zone', 'Total_Issues', 'CM Efficiency (Within TAT) %', 'CM Efficiency (Without TAT) %']].style.format({
-                        'Total_Issues': '{:,}',
-                        'CM Efficiency (Within TAT) %': '{:.1f}%',
-                        'CM Efficiency (Without TAT) %': '{:.1f}%'
-                    }).background_gradient(subset=['CM Efficiency (Within TAT) %'], cmap='Greens'),
+                    zone_df[['Zone', 'Faults_Received', 'Open_Faults', 'Closed_Faults', 'Closed_Within_TAT', 'Closed_Breached_TAT', 'CM Efficiency %']].style.format({
+                        'Faults_Received': '{:,}',
+                        'Open_Faults': '{:,}',
+                        'Closed_Faults': '{:,}',
+                        'Closed_Within_TAT': '{:,}',
+                        'Closed_Breached_TAT': '{:,}',
+                        'CM Efficiency %': '{:.1f}%'
+                    }).background_gradient(subset=['CM Efficiency %'], cmap='Greens'),
                     use_container_width=True
                 )
             else:
@@ -1164,11 +1353,17 @@ def run_streamlit_app():
         # 4. Repetitive Faults: Side-by-Side Chart + Table
         st.markdown('<div class="section-header">⚠️ 7. Repetitive Faults (Station ID & Sub-Type ≥ 2)</div>', unsafe_allow_html=True)
         stn_col = find_col(filtered_issue_df, ['Station ID', 'Station_ID', 'Station', 'Site ID'])
+        stn_name_col = find_col(filtered_issue_df, ['Station Name', 'Station_Name', 'Site Name'])
+        zme_col = find_col(filtered_issue_df, ['ZME', 'ZME Name', 'ZME_Name', 'Zone Manager'])
         sub_col = find_col(filtered_issue_df, ['Issue Sub-Type', 'Issue Sub Type', 'Sub Type', 'Fault Subtype', 'Issue Subtype'])
         type_col = find_col(filtered_issue_df, ['Issue Type', 'Issue_Type', 'Category'])
 
         if stn_col and sub_col:
             group_cols = [stn_col]
+            if stn_name_col and stn_name_col != stn_col:
+                group_cols.append(stn_name_col)
+            if zme_col:
+                group_cols.append(zme_col)
             if type_col:
                 group_cols.append(type_col)
             group_cols.append(sub_col)
@@ -1183,8 +1378,9 @@ def run_streamlit_app():
                     plot_vertical_bar(repeats.head(10), x_col='Station_Fault', y_col='Occurrences', title="Top Repetitive Fault Patterns", color_hex="#DC2626")
                 with col_rep_tbl:
                     st.write("##### Repetitive Station Faults Table")
+                    disp_cols = [c for c in group_cols if c in repeats.columns] + ['Occurrences']
                     st.dataframe(
-                        repeats.style.format({'Occurrences': '{:,}'}),
+                        repeats[disp_cols].style.format({'Occurrences': '{:,}'}),
                         use_container_width=True,
                         height=280
                     )
@@ -1196,14 +1392,18 @@ def run_streamlit_app():
     # ---------------------------------------------------------
     # TAB 2: PM F-01 DASHBOARD (CHARTS + TABLES SIDE-BY-SIDE)
     # ---------------------------------------------------------
+    # ---------------------------------------------------------
+    # TAB 2: PM F-01 DASHBOARD (CHARTS + TABLES SIDE-BY-SIDE)
+    # ---------------------------------------------------------
     with tab_pm:
         st.markdown('<div class="section-header">🛠️ Preventive Maintenance (PM F-01) Operational Analytics</div>', unsafe_allow_html=True)
 
-        pm_df = raw_pm_df.copy()
+        pm_df = filtered_pm_df.copy()
 
         pm_st_col = find_col(pm_df, ['PM Status', 'PM_Status', 'Status', 'PM Status (Yes/No)'])
-        pm_chg_col = find_col(pm_df, ['Charger ID', 'Charger_ID', 'Charger'])
+        pm_chg_col = find_col(pm_df, ['Charger ID', 'Charger_ID', 'Charger', 'OCPP ID', 'OCPP_ID'])
         pm_stn_col = find_col(pm_df, ['Station ID', 'Station_ID', 'Station'])
+        stn_name_col_pm = find_col(pm_df, ['Station Name', 'Station_Name', 'Site Name'])
         pm_zme_col = find_col(pm_df, ['ZME', 'ZME Name', 'ZME_Name', 'Zone Manager'])
         pm_zone_col = find_col(pm_df, ['Zone', 'Zone Name', 'Region'])
         adv_col = find_col(pm_df, ['Advance PM Done', 'Advance PM', 'Advance_PM_Done'])
@@ -1231,8 +1431,23 @@ def run_streamlit_app():
         total_chargers = len(pm_df[pm_chg_col].dropna().unique()) if pm_chg_col else len(pm_df)
         total_stations = len(pm_df[pm_stn_col].dropna().unique()) if pm_stn_col else len(pm_df)
 
-        # PM High-Impact KPI Row
-        p1, p2, p3, p4, p5 = st.columns(5)
+        # 1. Count Live Stations
+        go_live_col = find_col(pm_df, ['Go Live Date', 'Go-Live Date', 'Live Date', 'Commissioning Date', 'Go Live'])
+        st_status_col = find_col(pm_df, ['Station Status', 'Status', 'Site Status', 'Live Status'])
+        
+        if go_live_col and go_live_col in pm_df.columns:
+            live_mask = pm_df[go_live_col].notna()
+            if 'Go Live Date Parsed' in pm_df.columns:
+                live_mask = pm_df['Go Live Date Parsed'].notna()
+            live_stations = len(pm_df[live_mask][pm_stn_col].dropna().unique()) if pm_stn_col and pm_stn_col in pm_df.columns else len(pm_df[live_mask])
+        elif st_status_col and st_status_col in pm_df.columns:
+            live_mask = pm_df[st_status_col].astype(str).str.upper().str.contains('LIVE|ACTIVE|COMMISSIONED|OPERATIONAL')
+            live_stations = len(pm_df[live_mask][pm_stn_col].dropna().unique()) if pm_stn_col and pm_stn_col in pm_df.columns else len(pm_df[live_mask])
+        else:
+            live_stations = total_stations
+
+        # PM High-Impact KPI Row (6 Columns)
+        p1, p2, p3, p4, p5, p6 = st.columns(6)
         with p1:
             st.markdown(f"""
                 <div class="metric-card darkred">
@@ -1252,12 +1467,20 @@ def run_streamlit_app():
         with p3:
             st.markdown(f"""
                 <div class="metric-card green">
+                    <div class="metric-label">Live Stations</div>
+                    <div class="metric-val">{live_stations:,}</div>
+                    <div class="metric-sub">Operational Stations</div>
+                </div>
+            """, unsafe_allow_html=True)
+        with p4:
+            st.markdown(f"""
+                <div class="metric-card green">
                     <div class="metric-label">PM Done</div>
                     <div class="metric-val">{pm_done:,}</div>
                     <div class="metric-sub">Verified & Completed</div>
                 </div>
             """, unsafe_allow_html=True)
-        with p4:
+        with p5:
             st.markdown(f"""
                 <div class="metric-card red">
                     <div class="metric-label">PM Pending</div>
@@ -1265,7 +1488,7 @@ def run_streamlit_app():
                     <div class="metric-sub">Scheduled Pending</div>
                 </div>
             """, unsafe_allow_html=True)
-        with p5:
+        with p6:
             st.markdown(f"""
                 <div class="metric-card {'green' if pm_eff >= 90 else 'amber'}">
                     <div class="metric-label">PM Efficiency</div>
@@ -1377,6 +1600,116 @@ def run_streamlit_app():
                     height=300
                 )
 
+        st.markdown("---")
+
+        # 2. Count number of stations PM scheduled on basis of selection of Date, Month, Quarter, Year
+        st.markdown('<div class="section-header">🗓️ 4. PM Scheduled Station Breakdown by Selection (Date, Month, Quarter, Year)</div>', unsafe_allow_html=True)
+        period_choice = st.radio(
+            "Group PM Scheduled Stations by Period:",
+            ["Month", "Quarter", "Year", "Date"],
+            horizontal=True,
+            key="pm_period_choice"
+        )
+        period_col_map = {
+            "Month": "Scheduled Month",
+            "Quarter": "Scheduled Quarter",
+            "Year": "Scheduled Year",
+            "Date": "Scheduled Date"
+        }
+        target_period_col = period_col_map[period_choice]
+
+        if target_period_col in pm_df.columns and not pm_df[target_period_col].dropna().empty:
+            period_summary_list = []
+            for p_val, group in pm_df.groupby(target_period_col):
+                p_str = str(p_val)
+                p_chargers = len(group[pm_chg_col].dropna().unique()) if pm_chg_col and pm_chg_col in group.columns else len(group)
+                p_stations = len(group[pm_stn_col].dropna().unique()) if pm_stn_col and pm_stn_col in group.columns else len(group)
+                p_planning = len(group)
+
+                if pm_st_col and pm_st_col in group.columns:
+                    st_u = group[pm_st_col].astype(str).str.strip().str.upper()
+                    p_done = int((st_u == 'YES').sum())
+                    p_pending = int((st_u == 'NO').sum())
+                else:
+                    p_done = int(group['Is_PM_Done'].sum()) if 'Is_PM_Done' in group.columns else 0
+                    p_pending = int(group['Is_PM_Pending'].sum()) if 'Is_PM_Pending' in group.columns else 0
+
+                p_eff = (p_done / p_planning * 100) if p_planning > 0 else 0.0
+
+                period_summary_list.append({
+                    f'Period ({period_choice})': p_str,
+                    'Stations Scheduled': p_stations,
+                    'Chargers Scheduled': p_chargers,
+                    'PM Planning': p_planning,
+                    'PM Done': p_done,
+                    'PM Pending': p_pending,
+                    'PM Efficiency (%)': round(p_eff, 1)
+                })
+
+            period_summary_df = pd.DataFrame(period_summary_list)
+
+            c_per_chart, c_per_tbl = st.columns([6, 6])
+            with c_per_chart:
+                plot_grouped_bar(
+                    df=period_summary_df,
+                    x_col=f'Period ({period_choice})',
+                    y_cols=['Stations Scheduled', 'PM Done', 'PM Pending'],
+                    title=f"Scheduled Stations vs Completion by {period_choice}",
+                    colors=['#2563EB', '#16A34A', '#DC2626']
+                )
+
+            with c_per_tbl:
+                st.write(f"##### Scheduled Stations Data Table ({period_choice} Level)")
+                st.dataframe(
+                    period_summary_df.style.format({
+                        'Stations Scheduled': '{:,}',
+                        'Chargers Scheduled': '{:,}',
+                        'PM Planning': '{:,}',
+                        'PM Done': '{:,}',
+                        'PM Pending': '{:,}',
+                        'PM Efficiency (%)': '{:.1f}%'
+                    }).background_gradient(subset=['PM Efficiency (%)'], cmap='Blues'),
+                    use_container_width=True,
+                    height=280
+                )
+        else:
+            st.info(f"ℹ️ {period_choice} period data not available for PM scheduled stations.")
+
+        st.markdown("---")
+
+        # 3. Check if PM of specific OCPP ID has been done as per Scheduled Month, Quarter, Year, Date
+        st.markdown('<div class="section-header">🔌 5. OCPP ID / Charger PM Schedule & Compliance Status Checker</div>', unsafe_allow_html=True)
+        ocpp_col = find_col(pm_df, ['OCPP ID', 'OCPP_ID', 'Charger ID', 'Charger_ID', 'Charger', 'EVSE ID', 'Connector ID'])
+
+        if ocpp_col and ocpp_col in pm_df.columns:
+            all_ocpps = sorted([str(x) for x in pm_df[ocpp_col].dropna().unique().tolist()])
+            selected_ocpp = st.selectbox("Search or Select OCPP ID / Charger ID to Check Compliance:", ["All OCPP IDs"] + all_ocpps)
+
+            if selected_ocpp != "All OCPP IDs":
+                ocpp_records = pm_df[pm_df[ocpp_col].astype(str) == str(selected_ocpp)]
+            else:
+                ocpp_records = pm_df.copy()
+
+            # Build clean display table
+            disp_ocpp_cols = [ocpp_col]
+            if pm_stn_col and pm_stn_col in ocpp_records.columns:
+                disp_ocpp_cols.append(pm_stn_col)
+            if stn_name_col_pm and stn_name_col_pm in ocpp_records.columns and stn_name_col_pm != pm_stn_col:
+                disp_ocpp_cols.append(stn_name_col_pm)
+            if pm_zme_col and pm_zme_col in ocpp_records.columns:
+                disp_ocpp_cols.append(pm_zme_col)
+
+            for p_col in ['Scheduled Date', 'Scheduled Month', 'Scheduled Quarter', 'Scheduled Year', 'Due Date', 'Actual Completion Date', 'PM Compliance Status']:
+                if p_col in ocpp_records.columns:
+                    disp_ocpp_cols.append(p_col)
+
+            disp_ocpp_df = ocpp_records[[c for c in disp_ocpp_cols if c in ocpp_records.columns]].drop_duplicates()
+
+            st.write(f"##### Compliance Check Results ({len(disp_ocpp_df):,} Record(s))")
+            st.dataframe(disp_ocpp_df, use_container_width=True, height=300)
+        else:
+            st.info("ℹ️ OCPP ID / Charger ID column not found in dataset for compliance verification.")
+
     # ---------------------------------------------------------
     # TAB 3: MASTER DATA EXPLORER
     # ---------------------------------------------------------
@@ -1386,10 +1719,10 @@ def run_streamlit_app():
         exclude_cols = {'Issue Date Parsed', 'Due Date Parsed', 'Actual Completion Date Parsed', 'Is_TAT_Compliant', 'Is_TAT_Breached', 'Is_PM_Done', 'Is_PM_Pending'}
 
         if data_choice == "Issue Tracker Master Data":
-            df_disp = ensure_unique_columns(raw_issue_df.drop(columns=[c for c in exclude_cols if c in raw_issue_df.columns]))
+            df_disp = ensure_unique_columns(filtered_issue_df.drop(columns=[c for c in exclude_cols if c in filtered_issue_df.columns]))
             st.dataframe(df_disp, use_container_width=True)
         else:
-            df_disp = ensure_unique_columns(raw_pm_df.drop(columns=[c for c in exclude_cols if c in raw_pm_df.columns]))
+            df_disp = ensure_unique_columns(filtered_pm_df.drop(columns=[c for c in exclude_cols if c in filtered_pm_df.columns]))
             st.dataframe(df_disp, use_container_width=True)
 
 
