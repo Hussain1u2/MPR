@@ -394,6 +394,13 @@ def load_pm_tracker(source):
     else:
         df['Scheduled Date'] = 'Unscheduled / General'
 
+    # 5. Live Station Filtering (Strictly catch LIVE stations only)
+    st_status_col = find_col(df, ['Station Status', 'Status', 'Site Status', 'Live Status', 'Station_Status'])
+    if st_status_col and st_status_col in df.columns:
+        live_mask = df[st_status_col].astype(str).str.strip().str.upper().str.contains('LIVE|ACTIVE|COMMISSIONED|OPERATIONAL')
+        if live_mask.any():
+            df = df[live_mask].copy()
+
     if 'PM Status' in df.columns:
         pm_upper = df['PM Status'].astype(str).str.upper()
         df['Is_PM_Done'] = (pm_upper == 'YES')
@@ -401,6 +408,24 @@ def load_pm_tracker(source):
     else:
         df['Is_PM_Done'] = False
         df['Is_PM_Pending'] = False
+
+    # 6. Advance PM Done Formula (Quarterly Week Number vs Actual Completion Date)
+    week_col = find_col(df, ['Scheduled Week', 'Week Number', 'Week', 'PM Week', 'Quarterly Week'])
+
+    def check_advance_pm(row):
+        due_dt = row.get('Due Date Parsed') if 'Due Date Parsed' in row else None
+        act_dt = row.get('Actual Completion Date Parsed') if 'Actual Completion Date Parsed' in row else None
+        wk_val = row.get(week_col) if week_col and week_col in row else None
+
+        if pd.notna(act_dt):
+            if wk_val is not None and str(wk_val).isdigit():
+                if act_dt.isocalendar().week < int(wk_val):
+                    return "Yes"
+            if pd.notna(due_dt) and act_dt < due_dt:
+                return "Yes"
+        return "No"
+
+    df['Advance PM Done'] = df.apply(check_advance_pm, axis=1)
 
     # Compute OCPP / Charger Compliance Status
     def get_pm_compliance(row):
@@ -1392,30 +1417,29 @@ def run_streamlit_app():
     # Apply Filters to PM Dataframe
     filtered_pm_df = raw_pm_df.copy()
     if selected_segment != "All Segments" and pm_seg_col and pm_seg_col in filtered_pm_df.columns:
-        filtered_pm_df = filtered_pm_df[filtered_pm_df[pm_seg_col].astype(str).str.strip() == selected_segment]
+        filtered_pm_df = filtered_pm_df[filtered_pm_df[pm_seg_col].astype(str).str.strip().str.upper() == selected_segment.upper()]
 
     if selected_zone != "All Zones" and pm_zone_col and pm_zone_col in filtered_pm_df.columns:
-        filtered_pm_df = filtered_pm_df[filtered_pm_df[pm_zone_col].astype(str).str.strip() == selected_zone]
+        filtered_pm_df = filtered_pm_df[filtered_pm_df[pm_zone_col].astype(str).str.strip().str.upper() == selected_zone.upper()]
 
-    pm_date_col = find_col(filtered_pm_df, ['Due Date Parsed', 'Actual Completion Date Parsed', 'Due Date'])
-    if pm_date_col and pm_date_col in filtered_pm_df.columns:
-        if not pd.api.types.is_datetime64_any_dtype(filtered_pm_df[pm_date_col]):
-            temp_dt_series = pd.to_datetime(filtered_pm_df[pm_date_col], errors='coerce')
-        else:
-            temp_dt_series = filtered_pm_df[pm_date_col]
+    pm_dt_series = None
+    for dt_col in ['Due Date Parsed', 'Actual Completion Date Parsed', 'Go Live Date Parsed']:
+        if dt_col in filtered_pm_df.columns and filtered_pm_df[dt_col].notna().any():
+            pm_dt_series = filtered_pm_df[dt_col]
+            break
 
+    if pm_dt_series is not None:
         if date_filter_mode == "Month(s)" and selected_months:
             filtered_pm_df = filtered_pm_df[
-                temp_dt_series.dt.strftime('%b-%Y').isin(selected_months)
+                pm_dt_series.dt.strftime('%b-%Y').isin(selected_months) | pm_dt_series.isna()
             ]
         elif date_filter_mode == "Single Year" and selected_year:
             filtered_pm_df = filtered_pm_df[
-                temp_dt_series.dt.year.astype(str) == str(selected_year)
+                (pm_dt_series.dt.year.astype(str) == str(selected_year)) | pm_dt_series.isna()
             ]
         elif date_filter_mode == "Custom Date Range" and start_d and end_d:
             filtered_pm_df = filtered_pm_df[
-                (temp_dt_series.dt.date >= start_d) &
-                (temp_dt_series.dt.date <= end_d)
+                ((pm_dt_series.dt.date >= start_d) & (pm_dt_series.dt.date <= end_d)) | pm_dt_series.isna()
             ]
 
     st.sidebar.markdown("---")
@@ -1881,48 +1905,35 @@ def run_streamlit_app():
 
         pm_eff = (pm_done / total_pm_planning * 100) if total_pm_planning > 0 else 0.0
 
-        total_chargers = len(pm_df[pm_chg_col].dropna().unique()) if pm_chg_col else len(pm_df)
-        total_stations = len(pm_df[pm_stn_col].dropna().unique()) if pm_stn_col else len(pm_df)
-
-        # 1. Count Live Stations
-        go_live_col = find_col(pm_df, ['Go Live Date', 'Go-Live Date', 'Live Date', 'Commissioning Date', 'Go Live'])
-        st_status_col = find_col(pm_df, ['Station Status', 'Status', 'Site Status', 'Live Status'])
-        
-        if go_live_col and go_live_col in pm_df.columns:
-            live_mask = pm_df[go_live_col].notna()
-            if 'Go Live Date Parsed' in pm_df.columns:
-                live_mask = pm_df['Go Live Date Parsed'].notna()
-            live_stations = len(pm_df[live_mask][pm_stn_col].dropna().unique()) if pm_stn_col and pm_stn_col in pm_df.columns else len(pm_df[live_mask])
-        elif st_status_col and st_status_col in pm_df.columns:
-            live_mask = pm_df[st_status_col].astype(str).str.upper().str.contains('LIVE|ACTIVE|COMMISSIONED|OPERATIONAL')
-            live_stations = len(pm_df[live_mask][pm_stn_col].dropna().unique()) if pm_stn_col and pm_stn_col in pm_df.columns else len(pm_df[live_mask])
-        else:
-            live_stations = total_stations
+        # Calculate unique counts of Live Chargers and Live Stations
+        total_chargers = int(pm_df[pm_chg_col].dropna().nunique()) if pm_chg_col and pm_chg_col in pm_df.columns else len(pm_df)
+        total_stations = int(pm_df[pm_stn_col].dropna().nunique()) if pm_stn_col and pm_stn_col in pm_df.columns else len(pm_df)
+        live_stations = total_stations  # PM df is pre-filtered for LIVE stations
 
         # PM High-Impact KPI Row (6 Columns)
         p1, p2, p3, p4, p5, p6 = st.columns(6)
         with p1:
             st.markdown(f"""
                 <div class="metric-card darkred">
-                    <div class="metric-label">Total Chargers</div>
+                    <div class="metric-label">Live Chargers</div>
                     <div class="metric-val">{total_chargers:,}</div>
-                    <div class="metric-sub">Active Infrastructure</div>
+                    <div class="metric-sub">Unique Live OCPP IDs</div>
                 </div>
             """, unsafe_allow_html=True)
         with p2:
             st.markdown(f"""
                 <div class="metric-card grey">
-                    <div class="metric-label">Total Stations</div>
-                    <div class="metric-val">{total_stations:,}</div>
-                    <div class="metric-sub">Station Sites</div>
+                    <div class="metric-label">Live Stations</div>
+                    <div class="metric-val">{live_stations:,}</div>
+                    <div class="metric-sub">Unique Live Sites</div>
                 </div>
             """, unsafe_allow_html=True)
         with p3:
             st.markdown(f"""
                 <div class="metric-card green">
-                    <div class="metric-label">Live Stations</div>
-                    <div class="metric-val">{live_stations:,}</div>
-                    <div class="metric-sub">Operational Stations</div>
+                    <div class="metric-label">PM Planning</div>
+                    <div class="metric-val">{total_pm_planning:,}</div>
+                    <div class="metric-sub">Scheduled Work Orders</div>
                 </div>
             """, unsafe_allow_html=True)
         with p4:
@@ -1952,111 +1963,217 @@ def run_streamlit_app():
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # PM Status Chart & ZME Grouped Bar Chart: Side-by-Side
-        col_pm_pie, col_pm_bar = st.columns([5, 7])
+        # 1. PM Execution Status Overview (Vertical Bar Chart replacing Pie Chart)
+        st.markdown('<div class="section-header">📊 1. PM Execution Status Overview</div>', unsafe_allow_html=True)
+        pm_exec_df = pd.DataFrame({
+            'Metric': ['PM Planning', 'PM Done', 'PM Pending', 'Advance PM Done'],
+            'Count': [total_pm_planning, pm_done, pm_pending, advance_done]
+        })
 
-        with col_pm_pie:
-            st.markdown('<div class="section-header">🍩 1. PM Execution Status Ratio (Pie Chart)</div>', unsafe_allow_html=True)
-            plot_pie_chart(
-                labels=['PM Done (Completed)', 'PM Pending (Scheduled)', 'Advance PM Done'],
-                values=[pm_done, pm_pending, advance_done],
-                title="PM Execution Distribution Share",
-                colors=['#16A34A', '#DC2626', '#991B1B'],
-                hole=0.45
+        c_exec_c, c_exec_t = st.columns([7, 5])
+        with c_exec_c:
+            plot_vertical_bar(
+                pm_exec_df,
+                x_col='Metric',
+                y_col='Count',
+                title="PM Work Orders Execution Distribution",
+                color_hex="#991B1B"
             )
 
-        with col_pm_bar:
-            st.markdown('<div class="section-header">📊 2. PM Planning vs Completion by ZME (Grouped Chart)</div>', unsafe_allow_html=True)
-
-            if pm_zme_col:
-                group_keys = [pm_zme_col]
-                if pm_zone_col:
-                    group_keys.append(pm_zone_col)
-
-                pm_summary_list = []
-                for name_tuple, group in pm_df.groupby(group_keys):
-                    zme_name = name_tuple[0] if isinstance(name_tuple, tuple) else name_tuple
-                    zone_val = name_tuple[1] if isinstance(name_tuple, tuple) and len(name_tuple) > 1 else (group[pm_zone_col].iloc[0] if pm_zone_col and pm_zone_col in group.columns else 'N/A')
-
-                    chargers_cnt = len(group[pm_chg_col].dropna().unique()) if pm_chg_col and pm_chg_col in group.columns else len(group)
-                    stations_cnt = len(group[pm_stn_col].dropna().unique()) if pm_stn_col and pm_stn_col in group.columns else len(group)
-                    planning_cnt = len(group)
-                    
-                    if pm_st_col and pm_st_col in group.columns:
-                        st_u = group[pm_st_col].astype(str).str.strip().str.upper()
-                        done_cnt = int((st_u == 'YES').sum())
-                        pending_cnt = int((st_u == 'NO').sum())
-                    else:
-                        done_cnt = int(group['Is_PM_Done'].sum()) if 'Is_PM_Done' in group.columns else 0
-                        pending_cnt = int(group['Is_PM_Pending'].sum()) if 'Is_PM_Pending' in group.columns else 0
-                    
-                    if adv_col and adv_col in group.columns:
-                        adv_cnt = int((group[adv_col].astype(str).str.strip().str.upper() == 'YES').sum())
-                    elif 'Actual Completion Date Parsed' in group.columns and 'Due Date Parsed' in group.columns:
-                        adv_cnt = int(((group['Actual Completion Date Parsed'].notna()) & (group['Due Date Parsed'].notna()) & (group['Actual Completion Date Parsed'] < group['Due Date Parsed'])).sum())
-                    else:
-                        adv_cnt = 0
-
-                    eff_val = (done_cnt / planning_cnt * 100) if planning_cnt > 0 else 0.0
-
-                    pm_summary_list.append({
-                        'ZME Name': zme_name,
-                        'Zone': zone_val,
-                        'Total Chargers': chargers_cnt,
-                        'Total Stations': stations_cnt,
-                        'PM Planning': planning_cnt,
-                        'PM Done': done_cnt,
-                        'PM Pending': pending_cnt,
-                        'Advance PM Done': adv_cnt,
-                        'PM Efficiency (%)': round(eff_val, 1)
-                    })
-
-                pm_summary_df = pd.DataFrame(pm_summary_list).sort_values(by='PM Planning', ascending=False)
-
-                plot_grouped_bar(
-                    df=pm_summary_df,
-                    x_col='ZME Name',
-                    y_cols=['PM Planning', 'PM Done', 'PM Pending'],
-                    title="Scheduled vs Completed PM Work Orders by ZME",
-                    colors=['#991B1B', '#16A34A', '#DC2626']
-                )
+        with c_exec_t:
+            st.write("##### PM Execution Summary Table")
+            pm_exec_df['Share %'] = (pm_exec_df['Count'] / total_pm_planning * 100).round(1) if total_pm_planning > 0 else 0.0
+            st.dataframe(
+                pm_exec_df.style.format({
+                    'Count': '{:,}',
+                    'Share %': '{:.1f}%'
+                }).background_gradient(subset=['Count'], cmap='Reds'),
+                use_container_width=True,
+                height=250
+            )
 
         st.markdown("---")
 
-        # PM Asset Density Chart & Detailed Table: Side-by-Side
-        st.markdown('<div class="section-header">⚙️ 3. Asset Infrastructure & Detailed PM Summary Table</div>', unsafe_allow_html=True)
-        col_density_c, col_density_t = st.columns([6, 6])
+        # 2. Zone-wise PM Planning vs Actual PM Done & Advance PM Done (Grouped Bar Chart)
+        st.markdown('<div class="section-header">🏢 2. Zone-wise PM Planning vs Actual PM Done & Advance PM Done</div>', unsafe_allow_html=True)
+        pm_zone_col = find_col(pm_df, ['Zone', 'Zone Name', 'Region'])
 
-        if pm_zme_col and 'pm_summary_df' in locals():
-            with col_density_c:
+        if pm_zone_col and pm_zone_col in pm_df.columns:
+            zone_summary_list = []
+            for z_val, group in pm_df.groupby(pm_zone_col):
+                z_str = str(z_val).strip()
+                z_plan = len(group)
+                if pm_st_col and pm_st_col in group.columns:
+                    st_u = group[pm_st_col].astype(str).str.strip().str.upper()
+                    z_done = int((st_u == 'YES').sum())
+                    z_pend = int((st_u == 'NO').sum())
+                else:
+                    z_done = int(group['Is_PM_Done'].sum()) if 'Is_PM_Done' in group.columns else 0
+                    z_pend = int(group['Is_PM_Pending'].sum()) if 'Is_PM_Pending' in group.columns else 0
+
+                if 'Advance PM Done' in group.columns:
+                    z_adv = int((group['Advance PM Done'].astype(str).str.strip().str.upper() == 'YES').sum())
+                else:
+                    z_adv = 0
+
+                z_eff = (z_done / z_plan * 100) if z_plan > 0 else 0.0
+
+                zone_summary_list.append({
+                    'Zone': z_str,
+                    'PM Planning': z_plan,
+                    'Actual PM Done': z_done,
+                    'Advance PM Done': z_adv,
+                    'PM Pending': z_pend,
+                    'PM Efficiency (%)': round(z_eff, 1)
+                })
+
+            zone_pm_df = pd.DataFrame(zone_summary_list).sort_values(by='PM Planning', ascending=False)
+
+            c_zone_c, c_zone_t = st.columns([6, 6])
+            with c_zone_c:
                 plot_grouped_bar(
-                    df=pm_summary_df,
-                    x_col='ZME Name',
-                    y_cols=['Total Chargers', 'Total Stations'],
-                    title="Total Chargers vs Total Stations by ZME",
-                    colors=['#991B1B', '#DC2626']
+                    df=zone_pm_df,
+                    x_col='Zone',
+                    y_cols=['PM Planning', 'Actual PM Done', 'Advance PM Done'],
+                    title="PM Planning vs Actual PM Done vs Advance PM Done by Zone",
+                    colors=['#991B1B', '#16A34A', '#EF4444']
                 )
 
-            with col_density_t:
-                st.write("##### Detailed PM F-01 Breakdown Data Table")
+            with c_zone_t:
+                st.write("##### Zone-wise PM Summary Table")
                 st.dataframe(
-                    pm_summary_df.style.format({
-                        'Total Chargers': '{:,}',
-                        'Total Stations': '{:,}',
+                    zone_pm_df.style.format({
                         'PM Planning': '{:,}',
-                        'PM Done': '{:,}',
-                        'PM Pending': '{:,}',
+                        'Actual PM Done': '{:,}',
                         'Advance PM Done': '{:,}',
+                        'PM Pending': '{:,}',
                         'PM Efficiency (%)': '{:.1f}%'
                     }).background_gradient(subset=['PM Efficiency (%)'], cmap='Reds'),
                     use_container_width=True,
-                    height=300
+                    height=280
+                )
+
+        # 3. B2B / B2C Customer Segment Breakdown
+        pm_seg_col_tab = find_col(pm_df, ['B2B/ B2C', 'B2B/B2C', 'Segment', 'Customer Segment'])
+        if pm_seg_col_tab and pm_seg_col_tab in pm_df.columns:
+            st.markdown("---")
+            st.markdown('<div class="section-header">💼 3. Customer Segment (B2B vs B2C) PM Performance Breakdown</div>', unsafe_allow_html=True)
+            col_seg_c, col_seg_t = st.columns([5, 7])
+
+            seg_summary_list = []
+            for seg_val, group in pm_df.groupby(pm_seg_col_tab):
+                seg_str = str(seg_val).strip()
+                s_chg = int(group[pm_chg_col].dropna().nunique()) if pm_chg_col and pm_chg_col in group.columns else len(group)
+                s_stn = int(group[pm_stn_col].dropna().nunique()) if pm_stn_col and pm_stn_col in group.columns else len(group)
+                s_plan = len(group)
+                if pm_st_col and pm_st_col in group.columns:
+                    st_u = group[pm_st_col].astype(str).str.strip().str.upper()
+                    s_done = int((st_u == 'YES').sum())
+                    s_pend = int((st_u == 'NO').sum())
+                else:
+                    s_done = int(group['Is_PM_Done'].sum()) if 'Is_PM_Done' in group.columns else 0
+                    s_pend = int(group['Is_PM_Pending'].sum()) if 'Is_PM_Pending' in group.columns else 0
+
+                s_eff = (s_done / s_plan * 100) if s_plan > 0 else 0.0
+                seg_summary_list.append({
+                    'Customer Segment': seg_str,
+                    'Live Chargers': s_chg,
+                    'Live Stations': s_stn,
+                    'PM Planning': s_plan,
+                    'PM Done': s_done,
+                    'PM Pending': s_pend,
+                    'PM Efficiency (%)': round(s_eff, 1)
+                })
+
+            seg_df = pd.DataFrame(seg_summary_list).sort_values(by='PM Planning', ascending=False)
+
+            with col_seg_c:
+                plot_pie_chart(
+                    labels=seg_df['Customer Segment'].tolist(),
+                    values=seg_df['PM Planning'].tolist(),
+                    title="PM Work Orders by Customer Segment (B2B vs B2C)",
+                    colors=['#991B1B', '#DC2626', '#EF4444', '#7F1D1D']
+                )
+
+            with col_seg_t:
+                st.write("##### B2B / B2C Customer Segment Summary Data Table")
+                st.dataframe(
+                    seg_df.style.format({
+                        'Live Chargers': '{:,}',
+                        'Live Stations': '{:,}',
+                        'PM Planning': '{:,}',
+                        'PM Done': '{:,}',
+                        'PM Pending': '{:,}',
+                        'PM Efficiency (%)': '{:.1f}%'
+                    }).background_gradient(subset=['PM Efficiency (%)'], cmap='Reds'),
+                    use_container_width=True,
+                    height=240
                 )
 
         st.markdown("---")
 
-        # 2. Count number of stations PM scheduled on basis of selection of Date, Month, Quarter, Year
-        st.markdown('<div class="section-header">🗓️ 4. PM Scheduled Station Breakdown by Selection (Date, Month, Quarter, Year)</div>', unsafe_allow_html=True)
+        # 4. Detailed PM F-01 Breakdown Data Table (Full-Width)
+        st.markdown('<div class="section-header">⚙️ 4. Detailed PM F-01 Summary Data Table</div>', unsafe_allow_html=True)
+        if pm_zme_col:
+            group_keys = [pm_zme_col]
+            if pm_zone_col:
+                group_keys.append(pm_zone_col)
+
+            pm_summary_list = []
+            for name_tuple, group in pm_df.groupby(group_keys):
+                zme_name = name_tuple[0] if isinstance(name_tuple, tuple) else name_tuple
+                zone_val = name_tuple[1] if isinstance(name_tuple, tuple) and len(name_tuple) > 1 else (group[pm_zone_col].iloc[0] if pm_zone_col and pm_zone_col in group.columns else 'N/A')
+
+                chargers_cnt = int(group[pm_chg_col].dropna().nunique()) if pm_chg_col and pm_chg_col in group.columns else len(group)
+                stations_cnt = int(group[pm_stn_col].dropna().nunique()) if pm_stn_col and pm_stn_col in group.columns else len(group)
+                planning_cnt = len(group)
+
+                if pm_st_col and pm_st_col in group.columns:
+                    st_u = group[pm_st_col].astype(str).str.strip().str.upper()
+                    done_cnt = int((st_u == 'YES').sum())
+                    pending_cnt = int((st_u == 'NO').sum())
+                else:
+                    done_cnt = int(group['Is_PM_Done'].sum()) if 'Is_PM_Done' in group.columns else 0
+                    pending_cnt = int(group['Is_PM_Pending'].sum()) if 'Is_PM_Pending' in group.columns else 0
+
+                if adv_col and adv_col in group.columns:
+                    adv_cnt = int((group[adv_col].astype(str).str.strip().str.upper() == 'YES').sum())
+                else:
+                    adv_cnt = 0
+
+                eff_val = (done_cnt / planning_cnt * 100) if planning_cnt > 0 else 0.0
+
+                pm_summary_list.append({
+                    'ZME Name': zme_name,
+                    'Zone': zone_val,
+                    'Total Chargers': chargers_cnt,
+                    'Total Stations': stations_cnt,
+                    'PM Planning': planning_cnt,
+                    'PM Done': done_cnt,
+                    'PM Pending': pending_cnt,
+                    'Advance PM Done': adv_cnt,
+                    'PM Efficiency (%)': round(eff_val, 1)
+                })
+
+            pm_summary_df = pd.DataFrame(pm_summary_list).sort_values(by='PM Planning', ascending=False)
+            st.dataframe(
+                pm_summary_df.style.format({
+                    'Total Chargers': '{:,}',
+                    'Total Stations': '{:,}',
+                    'PM Planning': '{:,}',
+                    'PM Done': '{:,}',
+                    'PM Pending': '{:,}',
+                    'Advance PM Done': '{:,}',
+                    'PM Efficiency (%)': '{:.1f}%'
+                }).background_gradient(subset=['PM Efficiency (%)'], cmap='Reds'),
+                use_container_width=True,
+                height=320
+            )
+
+        st.markdown("---")
+
+        # 5. Count number of stations PM scheduled on basis of selection of Date, Month, Quarter, Year
+        st.markdown('<div class="section-header">🗓️ 5. PM Scheduled Station Breakdown by Selection (Date, Month, Quarter, Year)</div>', unsafe_allow_html=True)
         period_choice = st.radio(
             "Group PM Scheduled Stations by Period:",
             ["Month", "Quarter", "Year", "Date"],
@@ -2147,8 +2264,8 @@ def run_streamlit_app():
 
         st.markdown("---")
 
-        # 3. Check if PM of specific OCPP ID has been done as per Scheduled Month, Quarter, Year, Date
-        st.markdown('<div class="section-header">🔌 5. OCPP ID / Charger PM Schedule & Compliance Status Checker</div>', unsafe_allow_html=True)
+        # 6. Check if PM of specific OCPP ID has been done as per Scheduled Month, Quarter, Year, Date
+        st.markdown('<div class="section-header">🔌 6. OCPP ID / Charger PM Schedule & Compliance Status Checker</div>', unsafe_allow_html=True)
         ocpp_col = find_col(pm_df, ['OCPP ID', 'OCPP_ID', 'Charger ID', 'Charger_ID', 'Charger', 'EVSE ID', 'Connector ID'])
 
         if ocpp_col and ocpp_col in pm_df.columns:
