@@ -1019,37 +1019,81 @@ def run_streamlit_app():
     zone_options += sorted(list(found_zones))
     selected_zone = st.sidebar.selectbox("Filter by Zone:", zone_options)
 
-    # 3. Date Selection Filter
-    all_dates = []
-    if 'Issue Date Parsed' in raw_issue_df.columns:
-        all_dates.extend(raw_issue_df['Issue Date Parsed'].dropna().dt.date.tolist())
-    if 'Due Date Parsed' in raw_pm_df.columns:
-        all_dates.extend(raw_pm_df['Due Date Parsed'].dropna().dt.date.tolist())
-    if 'Actual Completion Date Parsed' in raw_pm_df.columns:
-        all_dates.extend(raw_pm_df['Actual Completion Date Parsed'].dropna().dt.date.tolist())
+    # 3. Date / Month / Year Selection Filter
+    date_filter_mode = st.sidebar.radio(
+        "Filter Date By:",
+        ["Month(s)", "Single Year", "Custom Date Range", "All Dates"],
+        horizontal=True
+    )
 
-    min_date, max_date = None, None
-    if all_dates:
-        min_date = min(all_dates)
-        max_date = max(all_dates)
-
-    selected_dates = None
-    if min_date and max_date:
-        if min_date == max_date:
-            selected_dates = st.sidebar.date_input("Filter by Date Range:", value=(min_date, max_date))
-        else:
-            selected_dates = st.sidebar.date_input("Filter by Date Range:", value=(min_date, max_date), min_value=min_date, max_value=max_date)
-
-    # Parse date range robustly
+    selected_months = []
+    selected_year = None
     start_d, end_d = None, None
-    if selected_dates:
-        if isinstance(selected_dates, (tuple, list)):
-            if len(selected_dates) == 2:
-                start_d, end_d = selected_dates[0], selected_dates[1]
-            elif len(selected_dates) == 1:
-                start_d = end_d = selected_dates[0]
+
+    if date_filter_mode == "Month(s)":
+        available_months_set = set()
+        if 'Issue Date Parsed' in raw_issue_df.columns:
+            valid_issue_d = raw_issue_df['Issue Date Parsed'].dropna()
+            for dt in valid_issue_d:
+                available_months_set.add((dt.year, dt.month))
+
+        if 'Due Date Parsed' in raw_pm_df.columns:
+            valid_pm_d = raw_pm_df['Due Date Parsed'].dropna()
+            for dt in valid_pm_d:
+                available_months_set.add((dt.year, dt.month))
+
+        sorted_ym = sorted(list(available_months_set))
+        month_labels = [datetime(y, m, 1).strftime('%b-%Y') for y, m in sorted_ym]
+
+        if month_labels:
+            selected_months = st.sidebar.multiselect("Select Month(s):", month_labels, default=month_labels)
         else:
-            start_d = end_d = selected_dates
+            st.sidebar.info("ℹ️ No valid dates found for month selection.")
+
+    elif date_filter_mode == "Single Year":
+        available_years_set = set()
+        if 'Issue Date Parsed' in raw_issue_df.columns:
+            valid_issue_d = raw_issue_df['Issue Date Parsed'].dropna()
+            for dt in valid_issue_d:
+                available_years_set.add(str(dt.year))
+
+        if 'Due Date Parsed' in raw_pm_df.columns:
+            valid_pm_d = raw_pm_df['Due Date Parsed'].dropna()
+            for dt in valid_pm_d:
+                available_years_set.add(str(dt.year))
+
+        sorted_years = sorted(list(available_years_set))
+        if sorted_years:
+            selected_year = st.sidebar.selectbox("Select Single Year:", sorted_years)
+        else:
+            st.sidebar.info("ℹ️ No valid dates found for year selection.")
+
+    elif date_filter_mode == "Custom Date Range":
+        all_dates = []
+        if 'Issue Date Parsed' in raw_issue_df.columns:
+            all_dates.extend(raw_issue_df['Issue Date Parsed'].dropna().dt.date.tolist())
+        if 'Due Date Parsed' in raw_pm_df.columns:
+            all_dates.extend(raw_pm_df['Due Date Parsed'].dropna().dt.date.tolist())
+        if 'Actual Completion Date Parsed' in raw_pm_df.columns:
+            all_dates.extend(raw_pm_df['Actual Completion Date Parsed'].dropna().dt.date.tolist())
+
+        if all_dates:
+            min_date = min(all_dates)
+            max_date = max(all_dates)
+            selected_dates = None
+            if min_date == max_date:
+                selected_dates = st.sidebar.date_input("Filter by Date Range:", value=(min_date, max_date))
+            else:
+                selected_dates = st.sidebar.date_input("Filter by Date Range:", value=(min_date, max_date), min_value=min_date, max_value=max_date)
+
+            if selected_dates:
+                if isinstance(selected_dates, (tuple, list)):
+                    if len(selected_dates) == 2:
+                        start_d, end_d = selected_dates[0], selected_dates[1]
+                    elif len(selected_dates) == 1:
+                        start_d = end_d = selected_dates[0]
+                else:
+                    start_d = end_d = selected_dates
 
     # Apply Filters to Issue Dataframe
     filtered_issue_df = raw_issue_df.copy()
@@ -1059,11 +1103,20 @@ def run_streamlit_app():
     if selected_zone != "All Zones" and issue_zone_col and issue_zone_col in filtered_issue_df.columns:
         filtered_issue_df = filtered_issue_df[filtered_issue_df[issue_zone_col].astype(str).str.strip() == selected_zone]
 
-    if start_d and end_d and 'Issue Date Parsed' in filtered_issue_df.columns:
-        filtered_issue_df = filtered_issue_df[
-            (filtered_issue_df['Issue Date Parsed'].dt.date >= start_d) &
-            (filtered_issue_df['Issue Date Parsed'].dt.date <= end_d)
-        ]
+    if 'Issue Date Parsed' in filtered_issue_df.columns:
+        if date_filter_mode == "Month(s)" and selected_months:
+            filtered_issue_df = filtered_issue_df[
+                filtered_issue_df['Issue Date Parsed'].dt.strftime('%b-%Y').isin(selected_months)
+            ]
+        elif date_filter_mode == "Single Year" and selected_year:
+            filtered_issue_df = filtered_issue_df[
+                filtered_issue_df['Issue Date Parsed'].dt.year.astype(str) == str(selected_year)
+            ]
+        elif date_filter_mode == "Custom Date Range" and start_d and end_d:
+            filtered_issue_df = filtered_issue_df[
+                (filtered_issue_df['Issue Date Parsed'].dt.date >= start_d) &
+                (filtered_issue_df['Issue Date Parsed'].dt.date <= end_d)
+            ]
 
     # Apply Filters to PM Dataframe
     filtered_pm_df = raw_pm_df.copy()
@@ -1073,16 +1126,25 @@ def run_streamlit_app():
     if selected_zone != "All Zones" and pm_zone_col and pm_zone_col in filtered_pm_df.columns:
         filtered_pm_df = filtered_pm_df[filtered_pm_df[pm_zone_col].astype(str).str.strip() == selected_zone]
 
-    if start_d and end_d:
-        pm_date_col = find_col(filtered_pm_df, ['Due Date Parsed', 'Actual Completion Date Parsed', 'Due Date'])
-        if pm_date_col and pm_date_col in filtered_pm_df.columns:
-            if not pd.api.types.is_datetime64_any_dtype(filtered_pm_df[pm_date_col]):
-                temp_dates = pd.to_datetime(filtered_pm_df[pm_date_col], errors='coerce').dt.date
-            else:
-                temp_dates = filtered_pm_df[pm_date_col].dt.date
+    pm_date_col = find_col(filtered_pm_df, ['Due Date Parsed', 'Actual Completion Date Parsed', 'Due Date'])
+    if pm_date_col and pm_date_col in filtered_pm_df.columns:
+        if not pd.api.types.is_datetime64_any_dtype(filtered_pm_df[pm_date_col]):
+            temp_dt_series = pd.to_datetime(filtered_pm_df[pm_date_col], errors='coerce')
+        else:
+            temp_dt_series = filtered_pm_df[pm_date_col]
+
+        if date_filter_mode == "Month(s)" and selected_months:
             filtered_pm_df = filtered_pm_df[
-                (temp_dates >= start_d) &
-                (temp_dates <= end_d)
+                temp_dt_series.dt.strftime('%b-%Y').isin(selected_months)
+            ]
+        elif date_filter_mode == "Single Year" and selected_year:
+            filtered_pm_df = filtered_pm_df[
+                temp_dt_series.dt.year.astype(str) == str(selected_year)
+            ]
+        elif date_filter_mode == "Custom Date Range" and start_d and end_d:
+            filtered_pm_df = filtered_pm_df[
+                (temp_dt_series.dt.date >= start_d) &
+                (temp_dt_series.dt.date <= end_d)
             ]
 
     st.sidebar.markdown("---")
