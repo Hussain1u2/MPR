@@ -1740,7 +1740,82 @@ def run_streamlit_app():
                     st.markdown("---")
 
                 # ---------------------------------------------------------
-                # B. Top 20 Stations with Repetitive Faults (Descending Order Explorer)
+                # B. Top 10 Overall Repetitive Issue Types & Top 5 Sub-Types Explorer
+                # ---------------------------------------------------------
+                if type_col and type_col in filtered_issue_df.columns:
+                    st.markdown("##### ⚡ Top 10 Overall Repetitive Issue Types & Sub-Types Explorer")
+                    st.caption("Click on any Issue Type below to expand and view its Top 5 Sub-Types and underlying ticket records:")
+
+                    type_totals = filtered_issue_df.groupby(type_col).size().reset_index(name='Total_Faults')
+                    type_totals = type_totals.sort_values(by='Total_Faults', ascending=False).head(10)
+
+                    c_type_chart, c_type_tbl = st.columns([6, 6])
+                    with c_type_chart:
+                        plot_vertical_bar(
+                            df=type_totals,
+                            x_col=type_col,
+                            y_col='Total_Faults',
+                            title="Top 10 Overall Repetitive Issue Types",
+                            color_hex="#991B1B"
+                        )
+
+                    with c_type_tbl:
+                        st.write("**Top 10 Issue Types Summary Table:**")
+                        type_totals['Share %'] = (type_totals['Total_Faults'] / len(filtered_issue_df) * 100).round(1)
+                        st.dataframe(
+                            type_totals.style.format({'Total_Faults': '{:,}', 'Share %': '{:.1f}%'}).background_gradient(subset=['Total_Faults'], cmap='Reds'),
+                            use_container_width=True,
+                            height=250
+                        )
+
+                    # Interactive Expander Drill-Down for Top 10 Types -> Top 5 Sub-Types
+                    for _, row_t in type_totals.iterrows():
+                        t_name = str(row_t[type_col]).strip()
+                        t_count = int(row_t['Total_Faults'])
+
+                        df_type_sub = filtered_issue_df[filtered_issue_df[type_col].astype(str).str.strip() == t_name]
+
+                        if sub_col and sub_col in df_type_sub.columns:
+                            sub_counts = df_type_sub.groupby(sub_col).size().reset_index(name='Subtype_Count')
+                            sub_counts = sub_counts.sort_values(by='Subtype_Count', ascending=False).head(5)
+                        else:
+                            sub_counts = pd.DataFrame()
+
+                        expander_title = f"🔧 Issue Type: {t_name} — Total {t_count:,} Occurrences ({len(sub_counts)} Top Sub-Types)"
+                        with st.expander(expander_title, expanded=False):
+                            if not sub_counts.empty:
+                                c_sub_chart, c_sub_tbl = st.columns([6, 6])
+                                with c_sub_chart:
+                                    plot_vertical_bar(
+                                        df=sub_counts,
+                                        x_col=sub_col,
+                                        y_col='Subtype_Count',
+                                        title=f"Top 5 Sub-Types for '{t_name}'",
+                                        color_hex="#DC2626"
+                                    )
+                                with c_sub_tbl:
+                                    st.write(f"📌 **Top 5 Sub-Types Table for {t_name}:**")
+                                    sub_counts['Sub-Type Share %'] = (sub_counts['Subtype_Count'] / t_count * 100).round(1)
+                                    st.dataframe(
+                                        sub_counts.style.format({'Subtype_Count': '{:,}', 'Sub-Type Share %': '{:.1f}%'}).background_gradient(subset=['Subtype_Count'], cmap='Reds'),
+                                        use_container_width=True,
+                                        height=220
+                                    )
+
+                                st.write(f"📝 **Underlying Ticket Log Records for Issue Type '{t_name}':**")
+                                ocpp_c = find_col(df_type_sub, ['OCPP ID', 'OCPP_ID', 'Charger ID', 'Connector ID', 'EVSE ID'])
+                                stat_c = find_col(df_type_sub, ['Status', 'Ticket Status', 'Issue Status'])
+                                tat_c = find_col(df_type_sub, ['TAT Compliance', 'SLA Compliance', 'Compliance'])
+                                type_disp_cols = [c for c in [ocpp_c, stn_col, stn_name_col, sub_col, stat_c, tat_c, zme_col, zone_col] if c and c in df_type_sub.columns]
+                                if type_disp_cols:
+                                    st.dataframe(df_type_sub[type_disp_cols], use_container_width=True, height=200)
+                            else:
+                                st.write("ℹ️ Sub-type breakdown not available for this issue type.")
+
+                    st.markdown("---")
+
+                # ---------------------------------------------------------
+                # C. Top 20 Stations with Repetitive Faults (Descending Order Explorer)
                 # ---------------------------------------------------------
                 # Compute total occurrences per station
                 stn_totals = repeats.groupby(stn_col)['Occurrences'].sum().reset_index(name='Total_Station_Occurrences')
