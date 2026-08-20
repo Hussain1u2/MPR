@@ -503,71 +503,101 @@ def build_issue_dashboard(wb, issue_df, irange):
     ws['A1'] = 'CHARGEZONE ISSUE TRACKER MPR DASHBOARD'
     ws['A1'].font = TITLE_FONT
     ws.merge_cells('A1:E1')
-    ws['A2'] = ('Source: Issue Data tab (live formulas). "Within TAT" = TAT Compliance = Yes, '
-                '"Without TAT" = TAT Compliance = No.')
+    ws['A2'] = 'Source: Issue Tracker Data. Filter-wise summary dashboard.'
     ws['A2'].font = NOTE_FONT
     ws.merge_cells('A2:H2')
 
+    status_col = find_col(issue_df, ['Status', 'Ticket Status', 'Issue Status', 'State'])
+    tat_col = find_col(issue_df, ['TAT Compliance', 'SLA Compliance', 'Compliance', 'TAT Status'])
+
+    if status_col and status_col in issue_df.columns:
+        s_status = issue_df[status_col].astype(str).str.strip().str.upper()
+        is_closed = s_status.isin(['CLOSED', 'RESOLVED'])
+        issue_df['_Is_Open_'] = ~is_closed
+        issue_df['_Is_Closed_'] = is_closed
+    else:
+        issue_df['_Is_Closed_'] = True
+        issue_df['_Is_Open_'] = False
+
+    if tat_col and tat_col in issue_df.columns:
+        s_tat = issue_df[tat_col].astype(str).str.strip().str.upper()
+        issue_df['_Is_Within_'] = (s_tat == 'YES')
+        issue_df['_Is_Without_'] = (s_tat == 'NO')
+        issue_df['_Is_Closed_Within_'] = issue_df['_Is_Closed_'] & (s_tat == 'YES')
+        issue_df['_Is_Closed_Without_'] = issue_df['_Is_Closed_'] & (s_tat == 'NO')
+    else:
+        issue_df['_Is_Within_'] = issue_df.get('Is_TAT_Compliant', False)
+        issue_df['_Is_Without_'] = issue_df.get('Is_TAT_Breached', False)
+        issue_df['_Is_Closed_Within_'] = issue_df['_Is_Closed_'] & issue_df['_Is_Within_']
+        issue_df['_Is_Closed_Without_'] = issue_df['_Is_Closed_'] & issue_df['_Is_Without_']
+
     row = 4
     row = section_title(ws, row, '1. Issue Summary & CM Efficiency by ZME', 7)
-    row = header_row(ws, row, ['ZME Name', 'Faults Received', 'Open Faults', 'Closed Faults', 'Closed Within TAT', 'Closed Breached TAT', 'CM Efficiency %'])
-    if 'ZME' in issue_df.columns:
-        for zme in sorted(issue_df['ZME'].dropna().unique()):
-            total = f'=COUNTIFS({irange("ZME")},A{row})'
-            open_f = f'=COUNTIFS({irange("ZME")},A{row},{irange("Status")},"<>Closed")' if 'Status' in issue_df.columns else f'=COUNTIFS({irange("ZME")},A{row},{irange("TAT Compliance")},"<>Yes")'
-            closed_f = f'=B{row}-C{row}'
-            within = f'=COUNTIFS({irange("ZME")},A{row},{irange("TAT Compliance")},"Yes")'
-            without = f'=COUNTIFS({irange("ZME")},A{row},{irange("TAT Compliance")},"No")'
-            eff = f'=IFERROR(E{row}/D{row},0)'
-            row = data_row(ws, row, [zme, total, open_f, closed_f, within, without, eff], pct_cols={6})
+    row = header_row(ws, row, ['ZME Name', 'Faults Received', 'Open Faults', 'Closed Faults', 'Closed Within TAT', 'Closed Without TAT', 'CM Efficiency %'])
+
+    zme_col = find_col(issue_df, ['ZME', 'ZME Name', 'ZME_Name', 'Zone Manager'])
+    if zme_col and zme_col in issue_df.columns:
+        for zme in sorted(issue_df[zme_col].dropna().unique()):
+            zme_sub = issue_df[issue_df[zme_col].astype(str).str.strip() == str(zme)]
+            total_val = len(zme_sub)
+            open_val = int(zme_sub['_Is_Open_'].sum())
+            closed_val = int(zme_sub['_Is_Closed_'].sum())
+            within_val = int(zme_sub['_Is_Closed_Within_'].sum())
+            without_val = int(zme_sub['_Is_Closed_Without_'].sum())
+            eff_val = (within_val / closed_val) if closed_val > 0 else 0.0
+
+            row = data_row(ws, row, [str(zme), total_val, open_val, closed_val, within_val, without_val, eff_val], pct_cols={6})
 
     row += 1
     row = section_title(ws, row, '2. Issue Summary & CM Efficiency by Zone', 7)
-    row = header_row(ws, row, ['Zone', 'Faults Received', 'Open Faults', 'Closed Faults', 'Closed Within TAT', 'Closed Breached TAT', 'CM Efficiency %'])
-    if 'Zone' in issue_df.columns:
-        for zone in sorted(issue_df['Zone'].dropna().unique()):
-            total = f'=COUNTIFS({irange("Zone")},A{row})'
-            open_f = f'=COUNTIFS({irange("Zone")},A{row},{irange("Status")},"<>Closed")' if 'Status' in issue_df.columns else f'=COUNTIFS({irange("Zone")},A{row},{irange("TAT Compliance")},"<>Yes")'
-            closed_f = f'=B{row}-C{row}'
-            within = f'=COUNTIFS({irange("Zone")},A{row},{irange("TAT Compliance")},"Yes")'
-            without = f'=COUNTIFS({irange("Zone")},A{row},{irange("TAT Compliance")},"No")'
-            eff = f'=IFERROR(E{row}/D{row},0)'
-            row = data_row(ws, row, [zone, total, open_f, closed_f, within, without, eff], pct_cols={6})
+    row = header_row(ws, row, ['Zone', 'Faults Received', 'Open Faults', 'Closed Faults', 'Closed Within TAT', 'Closed Without TAT', 'CM Efficiency %'])
+
+    zone_col = find_col(issue_df, ['Zone', 'Zone Name', 'Region'])
+    if zone_col and zone_col in issue_df.columns:
+        for zone in sorted(issue_df[zone_col].dropna().unique()):
+            zone_sub = issue_df[issue_df[zone_col].astype(str).str.strip() == str(zone)]
+            total_val = len(zone_sub)
+            open_val = int(zone_sub['_Is_Open_'].sum())
+            closed_val = int(zone_sub['_Is_Closed_'].sum())
+            within_val = int(zone_sub['_Is_Closed_Within_'].sum())
+            without_val = int(zone_sub['_Is_Closed_Without_'].sum())
+            eff_val = (within_val / closed_val) if closed_val > 0 else 0.0
+
+            row = data_row(ws, row, [str(zone), total_val, open_val, closed_val, within_val, without_val, eff_val], pct_cols={6})
 
     row += 1
     row = section_title(ws, row, '3. Repetitive Faults (same Station ID + Issue Sub-Type, 2+ occurrences)', 5)
+    stn_col = find_col(issue_df, ['Station ID', 'Station_ID', 'Station', 'Site ID'])
     stn_name_col = find_col(issue_df, ['Station Name', 'Station_Name', 'Site Name'])
     zme_name_col = find_col(issue_df, ['ZME', 'ZME Name', 'ZME_Name', 'Zone Manager'])
-    
+    sub_col = find_col(issue_df, ['Issue Sub-Type', 'Issue Sub Type', 'Sub Type', 'Fault Subtype'])
+
     headers = ['Station ID']
     if stn_name_col:
         headers.append('Station Name')
     if zme_name_col:
         headers.append('ZME Name')
     headers.extend(['Issue Sub-Type', 'Occurrences'])
-    
+
     row = header_row(ws, row, headers)
-    if 'Station ID' in issue_df.columns and 'Issue Sub-Type' in issue_df.columns:
-        group_keys = ['Station ID']
-        if stn_name_col:
+    if stn_col and sub_col and stn_col in issue_df.columns and sub_col in issue_df.columns:
+        group_keys = [stn_col]
+        if stn_name_col and stn_name_col != stn_col and stn_name_col in issue_df.columns:
             group_keys.append(stn_name_col)
-        if zme_name_col:
+        if zme_name_col and zme_name_col in issue_df.columns:
             group_keys.append(zme_name_col)
-        group_keys.append('Issue Sub-Type')
+        group_keys.append(sub_col)
 
         pair_counts = issue_df.groupby(group_keys).size().reset_index(name='Occurrences')
-        repeats = pair_counts[pair_counts['Occurrences'] >= 2]
+        repeats = pair_counts[pair_counts['Occurrences'] >= 2].sort_values(by='Occurrences', ascending=False)
         if not repeats.empty:
             for idx, r in repeats.iterrows():
-                vals = [r['Station ID']]
-                if stn_name_col:
+                vals = [r[stn_col]]
+                if stn_name_col and stn_name_col in r:
                     vals.append(r[stn_name_col])
-                if zme_name_col:
+                if zme_name_col and zme_name_col in r:
                     vals.append(r[zme_name_col])
-                vals.extend([
-                    r['Issue Sub-Type'],
-                    f'=COUNTIFS({irange("Station ID")},"{r["Station ID"]}",{irange("Issue Sub-Type")},"{r["Issue Sub-Type"]}")'
-                ])
+                vals.extend([r[sub_col], int(r['Occurrences'])])
                 row = data_row(ws, row, vals)
         else:
             row = data_row(ws, row, ['None found in current data'] + [''] * (len(headers) - 1))
@@ -575,29 +605,25 @@ def build_issue_dashboard(wb, issue_df, irange):
     row += 1
     row = section_title(ws, row, '4. Status Breakdown', 2)
     row = header_row(ws, row, ['Status', 'Count'])
-    if 'Status' in issue_df.columns:
-        for status in sorted(issue_df['Status'].dropna().unique()):
-            row = data_row(ws, row, [status, f'=COUNTIFS({irange("Status")},A{row})'])
+    if status_col and status_col in issue_df.columns:
+        for status, cnt in issue_df[status_col].dropna().value_counts().items():
+            row = data_row(ws, row, [str(status), int(cnt)])
 
     row += 1
     row = section_title(ws, row, '5. Severity Breakdown', 2)
     row = header_row(ws, row, ['Severity', 'Count'])
-    if 'Severity' in issue_df.columns:
-        for sev in sorted(issue_df['Severity'].dropna().unique()):
-            row = data_row(ws, row, [sev, f'=COUNTIFS({irange("Severity")},A{row})'])
+    sev_col = find_col(issue_df, ['Severity', 'Ticket Severity', 'Priority'])
+    if sev_col and sev_col in issue_df.columns:
+        for sev, cnt in issue_df[sev_col].dropna().value_counts().items():
+            row = data_row(ws, row, [str(sev), int(cnt)])
 
     row += 1
     row = section_title(ws, row, '6. Customer Filter (B2B / B2C)', 2)
     row = header_row(ws, row, ['Segment', 'Count'])
-    if 'B2B/ B2C' in issue_df.columns:
-        for seg in sorted(issue_df['B2B/ B2C'].dropna().unique()):
-            row = data_row(ws, row, [seg, f'=COUNTIFS({irange("B2B/ B2C")},A{row})'])
-
-    row += 1
-    ws.cell(row=row, column=1,
-            value=('Tip: use the dropdown filter arrows on the "Issue Data" tab to slice by '
-                   'customer, status, severity, zone, or ZME.')).font = NOTE_FONT
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+    seg_col = find_col(issue_df, ['B2B/ B2C', 'B2B/B2C', 'Segment', 'Customer Segment'])
+    if seg_col and seg_col in issue_df.columns:
+        for seg, cnt in issue_df[seg_col].dropna().value_counts().items():
+            row = data_row(ws, row, [str(seg), int(cnt)])
 
     for col, width in zip('ABCDEFGH', [26, 20, 16, 22, 26, 14]):
         ws.column_dimensions[col].width = width
@@ -606,32 +632,56 @@ def build_issue_dashboard(wb, issue_df, irange):
 def build_pm_dashboard(wb, pm_df, prange):
     ws = wb.create_sheet('Dashboard - PM F-01', 1)
     ws.sheet_view.showGridLines = False
-    ws['A1'] = 'PM F-01 — PREVENTIVE MAINTENANCE DASHBOARD (YTD, FY2627 Q1 + Q2)'
+    ws['A1'] = 'PM F-01 — PREVENTIVE MAINTENANCE DASHBOARD'
     ws['A1'].font = TITLE_FONT
     ws.merge_cells('A1:J1')
-    ws['A2'] = ('Scope: current fiscal year to date (Apr-26 to Sep-26). "PM Planning" = monthly PM instances '
-                'scheduled (non-blank PM Status), "PM Done" = PM Status = Yes, "PM Pending" = scheduled but not '
-                'done (PM Status = No), "Advance PM Done" = completed before the scheduled month started.')
+    ws['A2'] = 'Scope: Filter-wise PM F-01 summary report.'
     ws['A2'].font = NOTE_FONT
     ws.merge_cells('A2:J2')
 
+    zme_col = find_col(pm_df, ['ZME', 'ZME Name', 'ZME_Name', 'Zone Manager'])
+    zone_col = find_col(pm_df, ['Zone', 'Zone Name', 'Region'])
+    chg_col = find_col(pm_df, ['Charger ID', 'Charger_ID', 'Charger', 'OCPP ID', 'OCPP_ID'])
+    stn_col = find_col(pm_df, ['Station ID', 'Station_ID', 'Station'])
+    st_col = find_col(pm_df, ['PM Status', 'PM_Status', 'Status'])
+    adv_col = find_col(pm_df, ['Advance PM Done', 'Advance PM'])
+
     row = 4
-    if 'ZME' in pm_df.columns and 'Zone' in pm_df.columns:
-        zme_zone_pairs = pm_df[['ZME', 'Zone']].drop_duplicates().sort_values(['Zone', 'ZME']).values.tolist()
+    if zme_col and zme_col in pm_df.columns:
+        group_cols = [zme_col]
+        if zone_col and zone_col in pm_df.columns:
+            group_cols.append(zone_col)
+
+        zme_summary = []
+        for name_tuple, group in pm_df.groupby(group_cols):
+            z_name = name_tuple[0] if isinstance(name_tuple, tuple) else name_tuple
+            z_zone = name_tuple[1] if isinstance(name_tuple, tuple) and len(name_tuple) > 1 else (group[zone_col].iloc[0] if zone_col and zone_col in group.columns else 'N/A')
+
+            t_chg = len(group[chg_col].dropna().unique()) if chg_col and chg_col in group.columns else len(group)
+            t_stn = len(group[stn_col].dropna().unique()) if stn_col and stn_col in group.columns else len(group)
+            planning = len(group)
+
+            if st_col and st_col in group.columns:
+                st_u = group[st_col].astype(str).str.strip().str.upper()
+                done = int((st_u == 'YES').sum())
+                pending = int((st_u == 'NO').sum())
+            else:
+                done = int(group['Is_PM_Done'].sum()) if 'Is_PM_Done' in group.columns else 0
+                pending = int(group['Is_PM_Pending'].sum()) if 'Is_PM_Pending' in group.columns else 0
+
+            if adv_col and adv_col in group.columns:
+                adv = int((group[adv_col].astype(str).str.strip().str.upper() == 'YES').sum())
+            else:
+                adv = 0
+
+            eff = (done / planning) if planning > 0 else 0.0
+            zme_summary.append((str(z_name), str(z_zone), t_chg, t_stn, planning, done, pending, adv, eff))
+
         row = section_title(ws, row, 'PM Summary by ZME', 9)
         row = header_row(ws, row, ['ZME Name', 'Zone', 'Total Chargers', 'Total Stations', 'PM Planning',
                                     'PM Done', 'PM Pending', 'Advance PM Done', 'PM Efficiency'])
-        for zme, zone in zme_zone_pairs:
-            total_chargers = f'=COUNTIFS({prange("ZME")},A{row},{prange("Due Date")},DATE(2026,4,1))'
-            total_stations = (f'=SUMIFS({prange("First Station Occurrence")},{prange("ZME")},A{row},'
-                               f'{prange("Due Date")},DATE(2026,4,1))')
-            pm_planning = f'=COUNTIFS({prange("ZME")},A{row},{prange("PM Status")},"<>")'
-            pm_done = f'=COUNTIFS({prange("ZME")},A{row},{prange("PM Status")},"Yes")'
-            pm_pending = f'=E{row}-F{row}'
-            advance_done = f'=COUNTIFS({prange("ZME")},A{row},{prange("Advance PM Done")},"Yes")'
-            pm_eff = f'=IFERROR(F{row}/E{row},0)'
-            row = data_row(ws, row, [zme, zone, total_chargers, total_stations, pm_planning, pm_done,
-                                      pm_pending, advance_done, pm_eff], pct_cols={8})
+        for item in sorted(zme_summary, key=lambda x: x[4], reverse=True):
+            row = data_row(ws, row, list(item), pct_cols={8})
 
     for col, width in zip('ABCDEFGHIJ', [18, 10, 14, 14, 13, 11, 12, 16, 14, 10]):
         ws.column_dimensions[col].width = width
@@ -649,18 +699,15 @@ def get_dataframes_cached(source_bytes_or_path, pm_bytes_or_path=None):
     return issue_df, pm_df
 
 
-@st.cache_data(show_spinner=False)
-def generate_workbook_cached(source_bytes_or_path, pm_bytes_or_path=None):
-    """Cached workbook builder for Excel export generation."""
-    issue_df, pm_df = get_dataframes_cached(source_bytes_or_path, pm_bytes_or_path)
-
+def generate_mpr_workbook_from_dfs(issue_df, pm_df):
+    """Generates the Excel report package matching the active sidebar filters."""
     wb = Workbook()
     wb.remove(wb.active)
 
     issue_ws, issue_last = write_data_sheet(
         wb, 'Issue Data', issue_df, 'IssueTable',
         date_cols=['Issue Date', 'Resolution Date', 'Restoration Date'])
-    exclude_cols = {'Issue Date Parsed', 'Due Date Parsed', 'Actual Completion Date Parsed', 'Is_TAT_Compliant', 'Is_TAT_Breached', 'Is_PM_Done', 'Is_PM_Pending'}
+    exclude_cols = {'Issue Date Parsed', 'Due Date Parsed', 'Actual Completion Date Parsed', 'Is_TAT_Compliant', 'Is_TAT_Breached', 'Is_PM_Done', 'Is_PM_Pending', '_Is_Open_', '_Is_Closed_', '_Is_Within_', '_Is_Without_', '_Is_Closed_Within_', '_Is_Closed_Without_'}
     clean_issue_cols = [c for c in issue_df.columns if c not in exclude_cols]
     icol = {name: get_column_letter(i + 1) for i, name in enumerate(clean_issue_cols)}
 
@@ -674,12 +721,35 @@ def generate_workbook_cached(source_bytes_or_path, pm_bytes_or_path=None):
                  for i, name in enumerate(list(clean_pm_cols) + ['Advance PM Done', 'First Station Occurrence'])}
 
     def irange(col):
-        col_letter = icol.get(col, 'A')
-        return f"'Issue Data'!${col_letter}$2:${col_letter}${ISSUE_RANGE_END}"
+        col_aliases = {
+            'ZME': ['ZME', 'ZME Name', 'ZME_Name', 'Zone Manager'],
+            'Zone': ['Zone', 'Zone Name', 'Region'],
+            'Status': ['Status', 'Ticket Status', 'Issue Status', 'State'],
+            'TAT Compliance': ['TAT Compliance', 'SLA Compliance', 'Compliance', 'TAT Status'],
+            'Station ID': ['Station ID', 'Station_ID', 'Station', 'Site ID'],
+            'Issue Sub-Type': ['Issue Sub-Type', 'Issue Sub Type', 'Sub Type', 'Fault Subtype'],
+            'Severity': ['Severity', 'Ticket Severity', 'Priority'],
+            'B2B/ B2C': ['B2B/ B2C', 'B2B/B2C', 'Segment', 'Customer Segment']
+        }
+        possible = col_aliases.get(col, [col])
+        target_name = find_col(issue_df, possible)
+        letter = icol.get(target_name, 'A') if target_name else 'A'
+        return f"'Issue Data'!${letter}$2:${letter}${max(100, len(issue_df) + 1)}"
 
     def prange(col):
-        col_letter = pcol_full.get(col, 'A')
-        return f"'PM Data'!${col_letter}$2:${col_letter}${PM_RANGE_END}"
+        col_aliases = {
+            'ZME': ['ZME', 'ZME Name', 'ZME_Name', 'Zone Manager'],
+            'Zone': ['Zone', 'Zone Name', 'Region'],
+            'Station ID': ['Station ID', 'Station_ID', 'Station'],
+            'Due Date': ['Due Date', 'PM Due Date', 'Scheduled Date', 'Schedule Date', 'Due_Date'],
+            'PM Status': ['PM Status', 'PM_Status', 'Status'],
+            'Advance PM Done': ['Advance PM Done', 'Advance PM'],
+            'First Station Occurrence': ['First Station Occurrence']
+        }
+        possible = col_aliases.get(col, [col])
+        target_name = find_col(pm_df, possible)
+        letter = pcol_full.get(target_name, 'A') if target_name else 'A'
+        return f"'PM Data'!${letter}$2:${letter}${max(100, len(pm_df) + 1)}"
 
     build_issue_dashboard(wb, issue_df, irange)
     build_pm_dashboard(wb, pm_df, prange)
@@ -689,6 +759,13 @@ def generate_workbook_cached(source_bytes_or_path, pm_bytes_or_path=None):
     wb.save(buf)
     buf.seek(0)
     return buf.getvalue()
+
+
+@st.cache_data(show_spinner=False)
+def generate_workbook_cached(source_bytes_or_path, pm_bytes_or_path=None):
+    """Cached workbook builder for Excel export generation."""
+    issue_df, pm_df = get_dataframes_cached(source_bytes_or_path, pm_bytes_or_path)
+    return generate_mpr_workbook_from_dfs(issue_df, pm_df)
 
 
 def plot_pie_chart(labels, values, title, colors=None, hole=0.45):
@@ -1216,9 +1293,11 @@ def run_streamlit_app():
     timestamp = datetime.now().strftime("%Y-%m")
     out_filename = f"ChargeZone_MPR_Report_{timestamp}.xlsx"
 
+    excel_bytes = generate_mpr_workbook_from_dfs(filtered_issue_df, filtered_pm_df)
+
     st.sidebar.download_button(
         label="⚡ Download MPR Excel Report",
-        data=generate_workbook_cached(issue_input, pm_input),
+        data=excel_bytes,
         file_name=out_filename,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
@@ -1310,7 +1389,7 @@ def run_streamlit_app():
         with c5:
             st.markdown(f"""
                 <div class="metric-card red">
-                    <div class="metric-label">Closed Breached TAT</div>
+                    <div class="metric-label">Closed Without TAT</div>
                     <div class="metric-val">{closed_without:,}</div>
                     <div class="metric-sub">SLA Breached</div>
                 </div>
@@ -1337,7 +1416,7 @@ def run_streamlit_app():
                 Open_Faults=('_Is_Open_', 'sum'),
                 Closed_Faults=('_Is_Closed_', 'sum'),
                 Closed_Within_TAT=('_Is_Closed_Within_', 'sum'),
-                Closed_Breached_TAT=('_Is_Closed_Without_', 'sum')
+                Closed_Without_TAT=('_Is_Closed_Without_', 'sum')
             ).reset_index()
 
             # CM Efficiency % = Closed Within TAT / Total Closed Faults
@@ -1356,12 +1435,12 @@ def run_streamlit_app():
             with col_zme_t:
                 st.write("##### 📊 ZME Fault & CM Efficiency Table")
                 st.dataframe(
-                    zme_df[['ZME Name', 'Faults_Received', 'Open_Faults', 'Closed_Faults', 'Closed_Within_TAT', 'Closed_Breached_TAT', 'CM Efficiency %']].style.format({
+                    zme_df[['ZME Name', 'Faults_Received', 'Open_Faults', 'Closed_Faults', 'Closed_Within_TAT', 'Closed_Without_TAT', 'CM Efficiency %']].style.format({
                         'Faults_Received': '{:,}',
                         'Open_Faults': '{:,}',
                         'Closed_Faults': '{:,}',
                         'Closed_Within_TAT': '{:,}',
-                        'Closed_Breached_TAT': '{:,}',
+                        'Closed_Without_TAT': '{:,}',
                         'CM Efficiency %': '{:.1f}%'
                     }).background_gradient(subset=['CM Efficiency %'], cmap='Blues'),
                     use_container_width=True,
@@ -1378,7 +1457,7 @@ def run_streamlit_app():
         with col_sla_chart:
             st.markdown('<div class="section-header">🍩 2. SLA Compliance Ratio (Pie Chart)</div>', unsafe_allow_html=True)
             plot_pie_chart(
-                labels=['Closed Within TAT', 'Closed Breached TAT', 'Open Faults'],
+                labels=['Closed Within TAT', 'Closed Without TAT', 'Open Faults'],
                 values=[closed_within, closed_without, total_open],
                 title="Overall Fault Resolution Share",
                 colors=['#16A34A', '#EF4444', '#F59E0B'],
@@ -1394,7 +1473,7 @@ def run_streamlit_app():
                     Open_Faults=('_Is_Open_', 'sum'),
                     Closed_Faults=('_Is_Closed_', 'sum'),
                     Closed_Within_TAT=('_Is_Closed_Within_', 'sum'),
-                    Closed_Breached_TAT=('_Is_Closed_Without_', 'sum')
+                    Closed_Without_TAT=('_Is_Closed_Without_', 'sum')
                 ).reset_index()
 
                 zone_df['CM Efficiency %'] = (zone_df['Closed_Within_TAT'] / zone_df['Closed_Faults'].replace(0, pd.NA) * 100).fillna(0.0).round(1)
@@ -1409,12 +1488,12 @@ def run_streamlit_app():
                 )
 
                 st.dataframe(
-                    zone_df[['Zone', 'Faults_Received', 'Open_Faults', 'Closed_Faults', 'Closed_Within_TAT', 'Closed_Breached_TAT', 'CM Efficiency %']].style.format({
+                    zone_df[['Zone', 'Faults_Received', 'Open_Faults', 'Closed_Faults', 'Closed_Within_TAT', 'Closed_Without_TAT', 'CM Efficiency %']].style.format({
                         'Faults_Received': '{:,}',
                         'Open_Faults': '{:,}',
                         'Closed_Faults': '{:,}',
                         'Closed_Within_TAT': '{:,}',
-                        'Closed_Breached_TAT': '{:,}',
+                        'Closed_Without_TAT': '{:,}',
                         'CM Efficiency %': '{:.1f}%'
                     }).background_gradient(subset=['CM Efficiency %'], cmap='Greens'),
                     use_container_width=True
