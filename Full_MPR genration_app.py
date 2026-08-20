@@ -588,8 +588,8 @@ def build_issue_dashboard(wb, issue_df, irange):
 
     row = 4
     zme_header_row = row + 1
-    row = section_title(ws, row, '1. Issue Summary, CM Efficiency & TAT Efficiency by ZME', 8)
-    row = header_row(ws, row, ['ZME Name', 'Faults Received', 'Open Faults', 'Closed Faults', 'Closed Within TAT', 'Closed Without TAT', 'CM Efficiency %', 'TAT Efficiency %'])
+    row = section_title(ws, row, '1. Issue Summary, Overall CM Efficiency & CM-TAT Efficiency by ZME', 8)
+    row = header_row(ws, row, ['ZME Name', 'Faults Registered', 'Open Faults', 'Closed Faults', 'Closed Within TAT', 'Closed Without TAT', 'Overall CM Efficiency %', 'CM-TAT Efficiency %'])
 
     zme_col = find_col(issue_df, ['ZME', 'ZME Name', 'ZME_Name', 'Zone Manager'])
     zme_start = row
@@ -601,21 +601,21 @@ def build_issue_dashboard(wb, issue_df, irange):
             closed_val = int(zme_sub['_Is_Closed_'].sum())
             within_val = int(zme_sub['_Is_Closed_Within_'].sum())
             without_val = int(zme_sub['_Is_Closed_Without_'].sum())
-            cm_eff_val = (within_val / closed_val) if closed_val > 0 else 0.0
-            tat_eff_val = (within_val / total_val) if total_val > 0 else 0.0
+            overall_cm_eff_val = (closed_val / total_val) if total_val > 0 else 0.0
+            cm_tat_eff_val = (within_val / closed_val) if closed_val > 0 else 0.0
 
-            row = data_row(ws, row, [str(zme), total_val, open_val, closed_val, within_val, without_val, cm_eff_val, tat_eff_val], pct_cols={6, 7})
+            row = data_row(ws, row, [str(zme), total_val, open_val, closed_val, within_val, without_val, overall_cm_eff_val, cm_tat_eff_val], pct_cols={6, 7})
 
     zme_end = row - 1
     if zme_end >= zme_start:
         chart1 = BarChart()
         chart1.type = "col"
         chart1.style = 10
-        chart1.title = "Faults Received vs Open vs Closed Within TAT by ZME"
+        chart1.title = "Faults Registered vs Open vs Within TAT vs Without TAT by ZME"
         chart1.y_axis.title = "Fault Count"
         chart1.x_axis.title = "ZME"
 
-        data1 = Reference(ws, min_col=2, min_row=zme_header_row, max_col=5, max_row=zme_end)
+        data1 = Reference(ws, min_col=2, min_row=zme_header_row, max_col=6, max_row=zme_end)
         cats1 = Reference(ws, min_col=1, min_row=zme_start, max_row=zme_end)
         chart1.add_data(data1, titles_from_data=True)
         chart1.set_categories(cats1)
@@ -625,8 +625,8 @@ def build_issue_dashboard(wb, issue_df, irange):
 
     row += 1
     zone_header_row = row + 1
-    row = section_title(ws, row, '2. Issue Summary, CM Efficiency & TAT Efficiency by Zone', 8)
-    row = header_row(ws, row, ['Zone', 'Faults Received', 'Open Faults', 'Closed Faults', 'Closed Within TAT', 'Closed Without TAT', 'CM Efficiency %', 'TAT Efficiency %'])
+    row = section_title(ws, row, '2. Issue Summary, Overall CM Efficiency & CM-TAT Efficiency by Zone', 8)
+    row = header_row(ws, row, ['Zone', 'Faults Registered', 'Open Faults', 'Closed Faults', 'Closed Within TAT', 'Closed Without TAT', 'Overall CM Efficiency %', 'CM-TAT Efficiency %'])
 
     zone_start = row
     zone_col = find_col(issue_df, ['Zone', 'Zone Name', 'Region'])
@@ -638,10 +638,10 @@ def build_issue_dashboard(wb, issue_df, irange):
             closed_val = int(zone_sub['_Is_Closed_'].sum())
             within_val = int(zone_sub['_Is_Closed_Within_'].sum())
             without_val = int(zone_sub['_Is_Closed_Without_'].sum())
-            cm_eff_val = (within_val / closed_val) if closed_val > 0 else 0.0
-            tat_eff_val = (within_val / total_val) if total_val > 0 else 0.0
+            overall_cm_eff_val = (closed_val / total_val) if total_val > 0 else 0.0
+            cm_tat_eff_val = (within_val / closed_val) if closed_val > 0 else 0.0
 
-            row = data_row(ws, row, [str(zone), total_val, open_val, closed_val, within_val, without_val, cm_eff_val, tat_eff_val], pct_cols={6, 7})
+            row = data_row(ws, row, [str(zone), total_val, open_val, closed_val, within_val, without_val, overall_cm_eff_val, cm_tat_eff_val], pct_cols={6, 7})
 
     zone_end = row - 1
     if zone_end >= zone_start:
@@ -652,7 +652,7 @@ def build_issue_dashboard(wb, issue_df, irange):
         chart2.y_axis.title = "Fault Count"
         chart2.x_axis.title = "Zone"
 
-        data2 = Reference(ws, min_col=2, min_row=zone_header_row, max_col=5, max_row=zone_end)
+        data2 = Reference(ws, min_col=2, min_row=zone_header_row, max_col=6, max_row=zone_end)
         cats2 = Reference(ws, min_col=1, min_row=zone_start, max_row=zone_end)
         chart2.add_data(data2, titles_from_data=True)
         chart2.set_categories(cats2)
@@ -703,9 +703,15 @@ def build_issue_dashboard(wb, issue_df, irange):
     row = header_row(ws, row, ['Status', 'Count'])
     status_start = row
     if status_col and status_col in issue_df.columns:
-        for status, cnt in issue_df[status_col].dropna().value_counts().items():
+        status_vc = issue_df[status_col].dropna().value_counts()
+        for status, cnt in status_vc.items():
             row = data_row(ws, row, [str(status), int(cnt)])
-    status_end = row - 1
+        status_end = row - 1
+        # Add Total Row
+        row = data_row(ws, row, ['Total', int(status_vc.sum())])
+    else:
+        status_end = row - 1
+
     if status_end >= status_start:
         pie_status = PieChart()
         pie_status.title = "Status Breakdown"
@@ -718,28 +724,7 @@ def build_issue_dashboard(wb, issue_df, irange):
         ws.add_chart(pie_status, f"D{status_header_row - 1}")
 
     row += 1
-    sev_header_row = row + 1
-    row = section_title(ws, row, '5. Severity Breakdown', 2)
-    row = header_row(ws, row, ['Severity', 'Count'])
-    sev_start = row
-    sev_col = find_col(issue_df, ['Severity', 'Ticket Severity', 'Priority'])
-    if sev_col and sev_col in issue_df.columns:
-        for sev, cnt in issue_df[sev_col].dropna().value_counts().items():
-            row = data_row(ws, row, [str(sev), int(cnt)])
-    sev_end = row - 1
-    if sev_end >= sev_start:
-        pie_sev = PieChart()
-        pie_sev.title = "Severity Share"
-        data_sv = Reference(ws, min_col=2, min_row=sev_header_row, max_row=sev_end)
-        cats_sv = Reference(ws, min_col=1, min_row=sev_start, max_row=sev_end)
-        pie_sev.add_data(data_sv, titles_from_data=True)
-        pie_sev.set_categories(cats_sv)
-        pie_sev.width = 14
-        pie_sev.height = 8
-        ws.add_chart(pie_sev, f"D{sev_header_row - 1}")
-
-    row += 1
-    row = section_title(ws, row, '6. Customer Filter (B2B / B2C)', 2)
+    row = section_title(ws, row, '5. Customer Filter (B2B / B2C)', 2)
     row = header_row(ws, row, ['Segment', 'Count'])
     seg_col = find_col(issue_df, ['B2B/ B2C', 'B2B/B2C', 'Segment', 'Customer Segment'])
     if seg_col and seg_col in issue_df.columns:
@@ -909,25 +894,25 @@ def generate_workbook_cached(source_bytes_or_path, pm_bytes_or_path=None):
 
 
 def plot_pie_chart(labels, values, title, colors=None, hole=0.45):
-    """Renders a responsive, high-contrast Donut/Pie Chart."""
+    """Renders a responsive, interactive Donut/Pie Chart in Red & White Theme."""
     if HAS_PLOTLY:
         fig = go.Figure(data=[go.Pie(
             labels=labels,
             values=values,
             hole=hole,
-            marker_colors=colors if colors else ['#10B981', '#DC2626', '#475569', '#F59E0B', '#991B1B'],
+            marker_colors=colors if colors else ['#991B1B', '#DC2626', '#EF4444', '#F87171', '#FCA5A5'],
             textinfo='percent+value',
-            hoverinfo='label+percent+value',
+            hovertemplate='<b>%{label}</b><br>Count: <b>%{value:,}</b> (%{percent})<extra></extra>',
             insidetextfont=dict(color='#FFFFFF', size=13, family='Inter')
         )])
         fig.update_layout(
-            title=dict(text=title, font=dict(size=14, color='#0F172A', family='Inter', weight='bold')),
+            title=dict(text=title, font=dict(size=14, color='#991B1B', family='Inter', weight='bold')),
             margin=dict(l=15, r=15, t=45, b=15),
-            height=300,
+            height=320,
             showlegend=True,
             legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5)
         )
-        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'responsive': True})
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'responsive': True, 'displaylogo': False})
     else:
         df_pie = pd.DataFrame({'Category': labels, 'Value': values})
         st.write(f"**{title}**")
@@ -935,7 +920,7 @@ def plot_pie_chart(labels, values, title, colors=None, hole=0.45):
 
 
 def plot_vertical_bar(df, x_col, y_col, title, color_hex="#DC2626"):
-    """Renders a clean vertical bar chart with exact value labels."""
+    """Renders a clean, interactive vertical bar chart in Red & White Theme."""
     if HAS_PLOTLY:
         fig = px.bar(
             df,
@@ -945,27 +930,32 @@ def plot_vertical_bar(df, x_col, y_col, title, color_hex="#DC2626"):
             text=y_col,
             color_discrete_sequence=[color_hex]
         )
-        fig.update_traces(texttemplate='%{text}', textposition='outside', textfont=dict(size=12, family='Inter'))
+        fig.update_traces(
+            texttemplate='%{text}',
+            textposition='outside',
+            textfont=dict(size=12, family='Inter'),
+            hovertemplate='<b>%{x}</b><br>Total Count: <b>%{y:,}</b><extra></extra>'
+        )
         fig.update_layout(
             margin=dict(l=15, r=15, t=45, b=15),
-            height=320,
+            height=340,
             font=dict(family='Inter', color='#0F172A'),
             xaxis_title=x_col,
             yaxis_title=y_col,
             plot_bgcolor='rgba(0,0,0,0)',
-            yaxis=dict(showgrid=True, gridcolor='#F1F5F9')
+            yaxis=dict(showgrid=True, gridcolor='#FEE2E2')
         )
-        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'responsive': True})
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'responsive': True, 'displaylogo': False})
     else:
         st.write(f"**{title}**")
         st.bar_chart(df.set_index(x_col)[y_col], height=280)
 
 
 def plot_grouped_bar(df, x_col, y_cols, title, colors=None):
-    """Renders a responsive multi-series grouped column chart."""
+    """Renders a responsive, interactive multi-series grouped column chart in Red & White Theme."""
     if HAS_PLOTLY:
         fig = go.Figure()
-        palette = colors if colors else ['#DC2626', '#991B1B', '#475569', '#10B981']
+        palette = colors if colors else ['#991B1B', '#EF4444', '#DC2626', '#7F1D1D']
         for idx, col in enumerate(y_cols):
             fig.add_trace(go.Bar(
                 name=col,
@@ -974,18 +964,20 @@ def plot_grouped_bar(df, x_col, y_cols, title, colors=None):
                 marker_color=palette[idx % len(palette)],
                 text=df[col],
                 textposition='auto',
-                textfont=dict(size=11, family='Inter')
+                textfont=dict(size=11, family='Inter'),
+                hovertemplate='<b>%{x}</b><br>' + col + ': <b>%{y:,}</b><extra></extra>'
             ))
         fig.update_layout(
             barmode='group',
-            title=dict(text=title, font=dict(size=14, color='#0F172A', family='Inter', weight='bold')),
+            hovermode='x unified',
+            title=dict(text=title, font=dict(size=14, color='#991B1B', family='Inter', weight='bold')),
             margin=dict(l=15, r=15, t=45, b=15),
-            height=320,
-            legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
+            height=340,
+            legend=dict(orientation="h", yanchor="bottom", y=-0.28, xanchor="center", x=0.5),
             plot_bgcolor='rgba(0,0,0,0)',
-            yaxis=dict(showgrid=True, gridcolor='#F1F5F9')
+            yaxis=dict(showgrid=True, gridcolor='#FEE2E2')
         )
-        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'responsive': True})
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'responsive': True, 'displaylogo': False})
     else:
         st.write(f"**{title}**")
         st.dataframe(df.set_index(x_col)[y_cols], use_container_width=True)
@@ -1110,43 +1102,43 @@ def run_streamlit_app():
             font-weight: 500;
         }
 
-        /* Metric Cards */
+        /* Metric Cards - Pure Red & White Corporate Theme */
         .metric-card {
             background: #FFFFFF;
-            border: 1px solid #E2E8F0;
+            border: 1px solid #FEE2E2;
             border-radius: 14px;
             padding: 1.15rem 1.35rem;
-            box-shadow: 0 4px 12px rgba(15, 23, 42, 0.03);
+            box-shadow: 0 4px 14px rgba(153, 27, 27, 0.05);
             transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
         }
         .metric-card:hover {
             transform: translateY(-3px);
-            box-shadow: 0 10px 25px rgba(15, 23, 42, 0.08);
-            border-color: #CBD5E1;
+            box-shadow: 0 10px 25px rgba(153, 27, 27, 0.12);
+            border-color: #FCA5A5;
         }
         .metric-card.red { border-top: 5px solid #DC2626; }
         .metric-card.darkred { border-top: 5px solid #991B1B; }
-        .metric-card.grey { border-top: 5px solid #475569; }
-        .metric-card.green { border-top: 5px solid #059669; }
-        .metric-card.amber { border-top: 5px solid #D97706; }
+        .metric-card.grey { border-top: 5px solid #7F1D1D; }
+        .metric-card.green { border-top: 5px solid #B91C1C; }
+        .metric-card.amber { border-top: 5px solid #EF4444; }
 
         .metric-label {
             font-size: 0.73rem;
             font-weight: 800;
-            color: #64748B !important;
+            color: #991B1B !important;
             text-transform: uppercase;
             letter-spacing: 0.07em;
         }
         .metric-val {
             font-size: 1.85rem;
             font-weight: 900;
-            color: #0F172A !important;
+            color: #7F1D1D !important;
             margin-top: 0.25rem;
             letter-spacing: -0.02em;
         }
         .metric-sub {
             font-size: 0.74rem;
-            color: #475569 !important;
+            color: #991B1B !important;
             margin-top: 0.2rem;
             font-weight: 600;
         }
@@ -1460,7 +1452,6 @@ def run_streamlit_app():
     with tab_issues:
         st.markdown('<div class="section-header">📊 Operational Issue & SLA Analytics Performance</div>', unsafe_allow_html=True)
 
-        total_issues = len(filtered_issue_df)
         status_col = find_col(filtered_issue_df, ['Status', 'Ticket Status', 'Issue Status', 'State'])
         tat_col = find_col(filtered_issue_df, ['TAT Compliance', 'SLA Compliance', 'Compliance', 'TAT Status'])
         
@@ -1487,22 +1478,47 @@ def run_streamlit_app():
             filtered_issue_df['_Is_Closed_Within_'] = filtered_issue_df['_Is_Closed_'] & filtered_issue_df['_Is_Within_']
             filtered_issue_df['_Is_Closed_Without_'] = filtered_issue_df['_Is_Closed_'] & filtered_issue_df['_Is_Without_']
 
+        # Interactive Instant Search & Ticket State Filter Bar
+        c_srch, c_fltr = st.columns([7, 5])
+        with c_srch:
+            search_txt = st.text_input("🔍 Instant Search (Station ID, Station Name, ZME, or OCPP ID):", placeholder="e.g. STN-101, Ahmedabad, Rahul...", key="quick_tab1_search")
+        with c_fltr:
+            quick_status = st.selectbox("📌 Filter Dashboard View by Ticket State:", ["All Active Tickets", "Open Tickets Only", "Closed Within TAT Only", "Closed Without TAT Only"], key="quick_tab1_status_select")
+
+        # Apply Instant Search & Quick Ticket Filter dynamically
+        if search_txt and search_txt.strip() != "":
+            q = search_txt.strip().lower()
+            match_mask = pd.Series(False, index=filtered_issue_df.index)
+            for col in filtered_issue_df.columns:
+                if not col.startswith('_'):
+                    match_mask |= filtered_issue_df[col].astype(str).str.lower().str.contains(q, na=False)
+            filtered_issue_df = filtered_issue_df[match_mask]
+
+        if quick_status == "Open Tickets Only":
+            filtered_issue_df = filtered_issue_df[filtered_issue_df['_Is_Open_']]
+        elif quick_status == "Closed Within TAT Only":
+            filtered_issue_df = filtered_issue_df[filtered_issue_df['_Is_Closed_Within_']]
+        elif quick_status == "Closed Without TAT Only":
+            filtered_issue_df = filtered_issue_df[filtered_issue_df['_Is_Closed_Without_']]
+
+        total_issues = len(filtered_issue_df)
+
         total_open = int(filtered_issue_df['_Is_Open_'].sum())
         total_closed = int(filtered_issue_df['_Is_Closed_'].sum())
         closed_within = int(filtered_issue_df['_Is_Closed_Within_'].sum())
         closed_without = int(filtered_issue_df['_Is_Closed_Without_'].sum())
 
-        # Formula: CM Efficiency = Number of Faults closed within TAT / Total closed faults
-        cm_eff_closed = (closed_within / total_closed * 100) if total_closed > 0 else 0.0
-        # Formula: TAT Efficiency = Number of Faults closed within TAT / Total Faults Received
-        tat_eff_total = (closed_within / total_issues * 100) if total_issues > 0 else 0.0
+        # Formula 1: Overall CM Efficiency = Closed Faults / Faults Registered * 100
+        overall_cm_eff = (total_closed / total_issues * 100) if total_issues > 0 else 0.0
+        # Formula 2: CM-TAT Efficiency = Closed Within TAT / Total Closed Faults * 100
+        cm_tat_eff = (closed_within / total_closed * 100) if total_closed > 0 else 0.0
 
         # High-Impact KPI Row (7 Columns)
         c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
         with c1:
             st.markdown(f"""
                 <div class="metric-card darkred">
-                    <div class="metric-label">Faults Received</div>
+                    <div class="metric-label">Faults Registered</div>
                     <div class="metric-val">{total_issues:,}</div>
                     <div class="metric-sub">Total Tickets Logged</div>
                 </div>
@@ -1541,25 +1557,25 @@ def run_streamlit_app():
             """, unsafe_allow_html=True)
         with c6:
             st.markdown(f"""
-                <div class="metric-card {'green' if cm_eff_closed >= 85 else 'amber'}">
-                    <div class="metric-label">CM Efficiency</div>
-                    <div class="metric-val">{cm_eff_closed:.1f}%</div>
-                    <div class="metric-sub">Within TAT / Closed</div>
+                <div class="metric-card {'green' if overall_cm_eff >= 85 else 'amber'}">
+                    <div class="metric-label">Overall CM Efficiency</div>
+                    <div class="metric-val">{overall_cm_eff:.1f}%</div>
+                    <div class="metric-sub">Closed / Registered</div>
                 </div>
             """, unsafe_allow_html=True)
         with c7:
             st.markdown(f"""
-                <div class="metric-card {'green' if tat_eff_total >= 80 else 'amber'}">
-                    <div class="metric-label">TAT Efficiency</div>
-                    <div class="metric-val">{tat_eff_total:.1f}%</div>
-                    <div class="metric-sub">Within TAT / Received</div>
+                <div class="metric-card {'green' if cm_tat_eff >= 80 else 'amber'}">
+                    <div class="metric-label">CM-TAT Efficiency</div>
+                    <div class="metric-val">{cm_tat_eff:.1f}%</div>
+                    <div class="metric-sub">Within TAT / Closed</div>
                 </div>
             """, unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # 1. ZME Performance & CM / TAT Efficiency Breakdown
-        st.markdown('<div class="section-header">1. ZME Performance, CM & TAT Efficiency Breakdown</div>', unsafe_allow_html=True)
+        # 1. ZME Performance, Overall CM & CM-TAT Efficiency Breakdown
+        st.markdown('<div class="section-header">1. ZME Performance, Overall CM & CM-TAT Efficiency Breakdown</div>', unsafe_allow_html=True)
         col_zme_c, col_zme_t = st.columns([6, 6])
         zme_col = find_col(filtered_issue_df, ['ZME', 'ZME Name', 'ZME_Name', 'Zone Manager'])
 
@@ -1572,31 +1588,33 @@ def run_streamlit_app():
                 Closed_Without_TAT=('_Is_Closed_Without_', 'sum')
             ).reset_index()
 
-            zme_df['CM Efficiency %'] = (zme_df['Closed_Within_TAT'] / zme_df['Closed_Faults'].replace(0, pd.NA) * 100).fillna(0.0).round(1)
-            zme_df['TAT Efficiency %'] = (zme_df['Closed_Within_TAT'] / zme_df['Faults_Received'].replace(0, pd.NA) * 100).fillna(0.0).round(1)
+            # Overall CM Efficiency = Closed Faults / Faults Registered * 100
+            zme_df['Overall CM Efficiency %'] = (zme_df['Closed_Faults'] / zme_df['Faults_Received'].replace(0, pd.NA) * 100).fillna(0.0).round(1)
+            # CM-TAT Efficiency = Closed Within TAT / Total Closed Faults * 100
+            zme_df['CM-TAT Efficiency %'] = (zme_df['Closed_Within_TAT'] / zme_df['Closed_Faults'].replace(0, pd.NA) * 100).fillna(0.0).round(1)
             zme_df = zme_df.rename(columns={zme_col: 'ZME Name'}).sort_values(by='Faults_Received', ascending=False)
 
             with col_zme_c:
                 plot_grouped_bar(
                     df=zme_df,
                     x_col='ZME Name',
-                    y_cols=['Faults_Received', 'Open_Faults', 'Closed_Within_TAT'],
-                    title="Faults Received vs Open vs Closed Within TAT by ZME",
-                    colors=['#2563EB', '#F59E0B', '#16A34A']
+                    y_cols=['Faults_Received', 'Open_Faults', 'Closed_Within_TAT', 'Closed_Without_TAT'],
+                    title="Faults Registered vs Open vs Within TAT vs Without TAT by ZME",
+                    colors=['#991B1B', '#EF4444', '#DC2626', '#7F1D1D']
                 )
 
             with col_zme_t:
                 st.write("##### 📊 ZME Fault & Efficiency Table")
                 st.dataframe(
-                    zme_df[['ZME Name', 'Faults_Received', 'Open_Faults', 'Closed_Faults', 'Closed_Within_TAT', 'Closed_Without_TAT', 'CM Efficiency %', 'TAT Efficiency %']].style.format({
+                    zme_df[['ZME Name', 'Faults_Received', 'Open_Faults', 'Closed_Faults', 'Closed_Within_TAT', 'Closed_Without_TAT', 'Overall CM Efficiency %', 'CM-TAT Efficiency %']].style.format({
                         'Faults_Received': '{:,}',
                         'Open_Faults': '{:,}',
                         'Closed_Faults': '{:,}',
                         'Closed_Within_TAT': '{:,}',
                         'Closed_Without_TAT': '{:,}',
-                        'CM Efficiency %': '{:.1f}%',
-                        'TAT Efficiency %': '{:.1f}%'
-                    }).background_gradient(subset=['CM Efficiency %', 'TAT Efficiency %'], cmap='Blues'),
+                        'Overall CM Efficiency %': '{:.1f}%',
+                        'CM-TAT Efficiency %': '{:.1f}%'
+                    }).background_gradient(subset=['Overall CM Efficiency %', 'CM-TAT Efficiency %'], cmap='Reds'),
                     use_container_width=True,
                     height=300
                 )
@@ -1605,93 +1623,113 @@ def run_streamlit_app():
 
         st.markdown("---")
 
-        # 2. SLA Compliance Ratio & Zone Breakdown: Side-by-Side
-        col_sla_chart, col_zone_chart = st.columns([5, 7])
+        # 2. Zone Performance, Overall CM & CM-TAT Efficiency Breakdown
+        st.markdown('<div class="section-header">🏢 2. Zone Performance, Overall CM & CM-TAT Efficiency Breakdown</div>', unsafe_allow_html=True)
+        col_zone_c, col_zone_t = st.columns([6, 6])
+        zone_col = find_col(filtered_issue_df, ['Zone', 'Zone Name', 'Region'])
 
-        with col_sla_chart:
-            st.markdown('<div class="section-header">🍩 2. SLA Compliance Ratio (Pie Chart)</div>', unsafe_allow_html=True)
-            plot_pie_chart(
-                labels=['Closed Within TAT', 'Closed Without TAT', 'Open Faults'],
-                values=[closed_within, closed_without, total_open],
-                title="Overall Fault Resolution Share",
-                colors=['#16A34A', '#EF4444', '#F59E0B'],
-                hole=0.45
-            )
+        if zone_col:
+            zone_df = filtered_issue_df.groupby(zone_col).agg(
+                Faults_Received=(zone_col, 'count'),
+                Open_Faults=('_Is_Open_', 'sum'),
+                Closed_Faults=('_Is_Closed_', 'sum'),
+                Closed_Within_TAT=('_Is_Closed_Within_', 'sum'),
+                Closed_Without_TAT=('_Is_Closed_Without_', 'sum')
+            ).reset_index()
 
-        with col_zone_chart:
-            st.markdown('<div class="section-header">🏢 3. Zone CM & TAT Efficiency (Grouped Chart & Table)</div>', unsafe_allow_html=True)
-            zone_col = find_col(filtered_issue_df, ['Zone', 'Zone Name', 'Region'])
-            if zone_col:
-                zone_df = filtered_issue_df.groupby(zone_col).agg(
-                    Faults_Received=(zone_col, 'count'),
-                    Open_Faults=('_Is_Open_', 'sum'),
-                    Closed_Faults=('_Is_Closed_', 'sum'),
-                    Closed_Within_TAT=('_Is_Closed_Within_', 'sum'),
-                    Closed_Without_TAT=('_Is_Closed_Without_', 'sum')
-                ).reset_index()
+            zone_df['Overall CM Efficiency %'] = (zone_df['Closed_Faults'] / zone_df['Faults_Received'].replace(0, pd.NA) * 100).fillna(0.0).round(1)
+            zone_df['CM-TAT Efficiency %'] = (zone_df['Closed_Within_TAT'] / zone_df['Closed_Faults'].replace(0, pd.NA) * 100).fillna(0.0).round(1)
+            zone_df = zone_df.rename(columns={zone_col: 'Zone'}).sort_values(by='Faults_Received', ascending=False)
 
-                zone_df['CM Efficiency %'] = (zone_df['Closed_Within_TAT'] / zone_df['Closed_Faults'].replace(0, pd.NA) * 100).fillna(0.0).round(1)
-                zone_df['TAT Efficiency %'] = (zone_df['Closed_Within_TAT'] / zone_df['Faults_Received'].replace(0, pd.NA) * 100).fillna(0.0).round(1)
-                zone_df = zone_df.rename(columns={zone_col: 'Zone'}).sort_values(by='Faults_Received', ascending=False)
-
+            with col_zone_c:
                 plot_grouped_bar(
                     df=zone_df,
                     x_col='Zone',
-                    y_cols=['Faults_Received', 'Open_Faults', 'Closed_Within_TAT'],
-                    title="Faults Received vs Open vs Closed Within TAT by Zone",
-                    colors=['#2563EB', '#F59E0B', '#16A34A']
+                    y_cols=['Faults_Received', 'Open_Faults', 'Closed_Within_TAT', 'Closed_Without_TAT'],
+                    title="Faults Registered vs Open vs Within TAT vs Without TAT by Zone",
+                    colors=['#991B1B', '#EF4444', '#DC2626', '#7F1D1D']
                 )
 
+            with col_zone_t:
+                st.write("##### 🏢 Zone Fault & Efficiency Table")
                 st.dataframe(
-                    zone_df[['Zone', 'Faults_Received', 'Open_Faults', 'Closed_Faults', 'Closed_Within_TAT', 'Closed_Without_TAT', 'CM Efficiency %', 'TAT Efficiency %']].style.format({
+                    zone_df[['Zone', 'Faults_Received', 'Open_Faults', 'Closed_Faults', 'Closed_Within_TAT', 'Closed_Without_TAT', 'Overall CM Efficiency %', 'CM-TAT Efficiency %']].style.format({
                         'Faults_Received': '{:,}',
                         'Open_Faults': '{:,}',
                         'Closed_Faults': '{:,}',
                         'Closed_Within_TAT': '{:,}',
                         'Closed_Without_TAT': '{:,}',
-                        'CM Efficiency %': '{:.1f}%',
-                        'TAT Efficiency %': '{:.1f}%'
-                    }).background_gradient(subset=['CM Efficiency %', 'TAT Efficiency %'], cmap='Greens'),
-                    use_container_width=True
+                        'Overall CM Efficiency %': '{:.1f}%',
+                        'CM-TAT Efficiency %': '{:.1f}%'
+                    }).background_gradient(subset=['Overall CM Efficiency %', 'CM-TAT Efficiency %'], cmap='Reds'),
+                    use_container_width=True,
+                    height=300
                 )
+
+            # -------------------------------------------------------------
+            # INTERACTIVE TICKET & STATION DETAILS INSPECTOR (DRILL-DOWN)
+            # -------------------------------------------------------------
+            st.markdown("##### 🔍 Interactive Station & OCPP Ticket Inspector")
+            zone_list = ["All Zones in Selected Data"] + sorted(list(zone_df['Zone'].dropna().astype(str).unique()))
+            sel_zone = st.selectbox(
+                "Select a Zone to drill down into underlying Station ID, OCPP ID & ZME ticket details:",
+                zone_list,
+                key="interactive_zone_inspector"
+            )
+
+            if sel_zone != "All Zones in Selected Data":
+                inspect_df = filtered_issue_df[filtered_issue_df[zone_col].astype(str).str.strip() == str(sel_zone)]
             else:
-                st.info("ℹ️ Zone column not found in dataset.")
+                inspect_df = filtered_issue_df
+
+            ocpp_col = find_col(inspect_df, ['OCPP ID', 'OCPP_ID', 'Charger ID', 'Connector ID', 'EVSE ID', 'OCPP', 'Station ID'])
+            stn_id_col = find_col(inspect_df, ['Station ID', 'Station_ID', 'Station', 'Site ID'])
+            stn_name_col = find_col(inspect_df, ['Station Name', 'Station_Name', 'Site Name'])
+            zme_n_col = find_col(inspect_df, ['ZME', 'ZME Name', 'ZME_Name', 'Zone Manager'])
+            sub_t_col = find_col(inspect_df, ['Issue Sub-Type', 'Issue Sub Type', 'Sub Type', 'Fault Subtype', 'Issue Subtype'])
+            stat_c = find_col(inspect_df, ['Status', 'Ticket Status', 'Issue Status', 'State'])
+            tat_c = find_col(inspect_df, ['TAT Compliance', 'SLA Compliance', 'Compliance', 'TAT Status'])
+
+            show_cols = []
+            for c in [ocpp_col, stn_id_col, stn_name_col, zme_n_col, sub_t_col, stat_c, tat_c]:
+                if c and c in inspect_df.columns and c not in show_cols:
+                    show_cols.append(c)
+
+            if show_cols:
+                st.dataframe(
+                    inspect_df[show_cols],
+                    use_container_width=True,
+                    height=260
+                )
+                st.caption(f"Showing {len(inspect_df):,} ticket records for Zone: **{sel_zone}**")
+        else:
+            st.info("ℹ️ Zone column not found in dataset.")
 
         st.markdown("---")
 
-        # 3. Status & Severity & Customer Segment (Chart + Table Pairs)
-        c_stat, c_sev, c_cust = st.columns(3)
+        # 3. Status Breakdown & Customer Segment (Side-by-Side)
+        c_stat, c_cust = st.columns(2)
 
         with c_stat:
-            st.markdown('<div class="section-header">📌 4. Status Breakdown</div>', unsafe_allow_html=True)
+            st.markdown('<div class="section-header">📌 3. Status Breakdown</div>', unsafe_allow_html=True)
             status_col = find_col(filtered_issue_df, ['Status', 'Ticket Status', 'Issue Status', 'State'])
             if status_col:
                 status_counts = filtered_issue_df[status_col].dropna().value_counts().reset_index()
                 status_counts.columns = ['Status', 'Count']
                 plot_vertical_bar(status_counts, x_col='Status', y_col='Count', title="Status Pipeline", color_hex="#8B5CF6")
-                st.dataframe(status_counts, use_container_width=True)
+                
+                tot_cnt = int(status_counts['Count'].sum())
+                status_tbl_df = pd.concat([
+                    status_counts,
+                    pd.DataFrame([{'Status': 'Total', 'Count': tot_cnt}])
+                ], ignore_index=True)
+                
+                st.dataframe(status_tbl_df.style.format({'Count': '{:,}'}), use_container_width=True)
             else:
                 st.info("ℹ️ Status column not found.")
 
-        with c_sev:
-            st.markdown('<div class="section-header">🚨 5. Severity Risk Profile</div>', unsafe_allow_html=True)
-            sev_col = find_col(filtered_issue_df, ['Severity', 'Ticket Severity', 'Priority'])
-            if sev_col:
-                sev_counts = filtered_issue_df[sev_col].dropna().value_counts().reset_index()
-                sev_counts.columns = ['Severity', 'Count']
-                plot_pie_chart(
-                    labels=sev_counts['Severity'].tolist(),
-                    values=sev_counts['Count'].tolist(),
-                    title="Severity Share",
-                    colors=['#EF4444', '#F59E0B', '#3B82F6', '#10B981'],
-                    hole=0.4
-                )
-                st.dataframe(sev_counts, use_container_width=True)
-            else:
-                st.info("ℹ️ Severity column not found.")
-
         with c_cust:
-            st.markdown('<div class="section-header">👥 6. Customer Segment (B2B/B2C)</div>', unsafe_allow_html=True)
+            st.markdown('<div class="section-header">👥 4. Customer Segment (B2B/B2C)</div>', unsafe_allow_html=True)
             seg_col = find_col(filtered_issue_df, ['B2B/ B2C', 'B2B/B2C', 'Segment', 'Customer Segment'])
             if seg_col:
                 cust_counts = filtered_issue_df[seg_col].dropna().value_counts().reset_index()
@@ -1709,11 +1747,12 @@ def run_streamlit_app():
 
         st.markdown("---")
 
-        # 4. Repetitive Faults: Side-by-Side Chart + Table
-        st.markdown('<div class="section-header">⚠️ 7. Repetitive Faults (Station ID & Sub-Type ≥ 2)</div>', unsafe_allow_html=True)
+        # 5. Repetitive Faults & Region-wise Summary
+        st.markdown('<div class="section-header">⚠️ 5. Repetitive Faults & Region-wise Summary (Station ID & Sub-Type ≥ 2)</div>', unsafe_allow_html=True)
         stn_col = find_col(filtered_issue_df, ['Station ID', 'Station_ID', 'Station', 'Site ID'])
         stn_name_col = find_col(filtered_issue_df, ['Station Name', 'Station_Name', 'Site Name'])
         zme_col = find_col(filtered_issue_df, ['ZME', 'ZME Name', 'ZME_Name', 'Zone Manager'])
+        zone_col = find_col(filtered_issue_df, ['Zone', 'Zone Name', 'Region'])
         sub_col = find_col(filtered_issue_df, ['Issue Sub-Type', 'Issue Sub Type', 'Sub Type', 'Fault Subtype', 'Issue Subtype'])
         type_col = find_col(filtered_issue_df, ['Issue Type', 'Issue_Type', 'Category'])
 
@@ -1721,6 +1760,8 @@ def run_streamlit_app():
             group_cols = [stn_col]
             if stn_name_col and stn_name_col != stn_col:
                 group_cols.append(stn_name_col)
+            if zone_col:
+                group_cols.append(zone_col)
             if zme_col:
                 group_cols.append(zme_col)
             if type_col:
@@ -1731,18 +1772,105 @@ def run_streamlit_app():
             repeats = pair_counts[pair_counts['Occurrences'] >= 2].sort_values(by='Occurrences', ascending=False)
 
             if not repeats.empty:
-                col_rep_chart, col_rep_tbl = st.columns([6, 6])
+                # ---------------------------------------------------------
+                # A. Region-wise (Zone-wise) Repetitive Faults Summary Table & Chart
+                # ---------------------------------------------------------
+                if zone_col and zone_col in repeats.columns:
+                    st.markdown("##### 🌍 Region-wise Repetitive Fault Breakdown")
+                    col_reg_c, col_reg_t = st.columns([6, 6])
+                    
+                    region_rep_df = repeats.groupby(zone_col).agg(
+                        Total_Repetitive_Faults=('Occurrences', 'sum'),
+                        Affected_Stations=(stn_col, 'nunique')
+                    ).reset_index().rename(columns={zone_col: 'Region'}).sort_values(by='Total_Repetitive_Faults', ascending=False)
+                    
+                    with col_reg_c:
+                        plot_vertical_bar(
+                            region_rep_df,
+                            x_col='Region',
+                            y_col='Total_Repetitive_Faults',
+                            title="Total Repetitive Faults by Region / Zone",
+                            color_hex="#E11D48"
+                        )
+                    
+                    with col_reg_t:
+                        st.write("**Region-wise Summary Table:**")
+                        st.dataframe(
+                            region_rep_df.style.format({
+                                'Total_Repetitive_Faults': '{:,}',
+                                'Affected_Stations': '{:,}'
+                            }).background_gradient(subset=['Total_Repetitive_Faults'], cmap='Reds'),
+                            use_container_width=True,
+                            height=220
+                        )
+                    st.markdown("---")
+
+                # ---------------------------------------------------------
+                # B. Top 20 Stations with Repetitive Faults (Descending Order)
+                # ---------------------------------------------------------
+                col_rep_chart, col_rep_tbl = st.columns([5, 7])
+                
+                # Compute total occurrences per station
+                stn_totals = repeats.groupby(stn_col)['Occurrences'].sum().reset_index(name='Total_Station_Occurrences')
+                stn_totals = stn_totals.sort_values(by='Total_Station_Occurrences', ascending=False)
+                
+                # Get Top 20 stations
+                top_20_stn_ids = stn_totals.head(20)[stn_col].tolist()
+                top_20_repeats = repeats[repeats[stn_col].isin(top_20_stn_ids)].copy()
+                
                 with col_rep_chart:
-                    repeats['Station_Fault'] = repeats[stn_col].astype(str) + " - " + repeats[sub_col].astype(str)
-                    plot_vertical_bar(repeats.head(10), x_col='Station_Fault', y_col='Occurrences', title="Top Repetitive Fault Patterns", color_hex="#DC2626")
-                with col_rep_tbl:
-                    st.write("##### Repetitive Station Faults Table")
-                    disp_cols = [c for c in group_cols if c in repeats.columns] + ['Occurrences']
-                    st.dataframe(
-                        repeats[disp_cols].style.format({'Occurrences': '{:,}'}),
-                        use_container_width=True,
-                        height=280
+                    st.markdown("##### 📊 Top 20 Repetitive Stations Chart")
+                    top_20_chart_df = stn_totals.head(20).copy()
+                    if stn_name_col and stn_name_col in repeats.columns:
+                        name_map = repeats.groupby(stn_col)[stn_name_col].first().to_dict()
+                        top_20_chart_df['Station_Label'] = top_20_chart_df[stn_col].astype(str) + " (" + top_20_chart_df[stn_col].map(name_map).fillna('').astype(str) + ")"
+                    else:
+                        top_20_chart_df['Station_Label'] = top_20_chart_df[stn_col].astype(str)
+                    
+                    plot_vertical_bar(
+                        top_20_chart_df,
+                        x_col='Station_Label',
+                        y_col='Total_Station_Occurrences',
+                        title="Top 20 Stations by Repetitive Fault Occurrences",
+                        color_hex="#DC2626"
                     )
+                
+                with col_rep_tbl:
+                    st.write("##### 📁 Top 20 Repetitive Stations Explorer (Descending Order)")
+                    st.caption("Click on any station below (sorted by total repetitive fault count) to inspect sub-types:")
+                    
+                    for _, row_stn in stn_totals.head(20).iterrows():
+                        stn_id = row_stn[stn_col]
+                        stn_group = top_20_repeats[top_20_repeats[stn_col] == stn_id]
+                        
+                        s_name = ""
+                        if stn_name_col and stn_name_col in stn_group.columns:
+                            first_val = stn_group[stn_name_col].iloc[0]
+                            if pd.notna(first_val) and str(first_val).strip() != "":
+                                s_name = str(first_val).strip()
+                        
+                        total_stn_reps = int(row_stn['Total_Station_Occurrences'])
+                        sub_count = len(stn_group)
+                        
+                        header_title = f"🚉 Station {stn_id}"
+                        if s_name:
+                            header_title += f" ({s_name})"
+                        header_title += f" — {total_stn_reps:,} Repetitive Faults across {sub_count} Sub-Type(s)"
+                        
+                        with st.expander(header_title, expanded=False):
+                            st.write("📌 **Sub-Type Breakdown:**")
+                            disp_sub_cols = [c for c in [sub_col, type_col, zme_col, zone_col, 'Occurrences'] if c and c in stn_group.columns]
+                            st.dataframe(stn_group[disp_sub_cols].style.format({'Occurrences': '{:,}'}), use_container_width=True)
+                            
+                            stn_tickets = filtered_issue_df[filtered_issue_df[stn_col].astype(str).str.strip() == str(stn_id).strip()]
+                            ocpp_c = find_col(stn_tickets, ['OCPP ID', 'OCPP_ID', 'Charger ID', 'Connector ID', 'EVSE ID'])
+                            stat_c = find_col(stn_tickets, ['Status', 'Ticket Status', 'Issue Status'])
+                            tat_c = find_col(stn_tickets, ['TAT Compliance', 'SLA Compliance', 'Compliance'])
+                            
+                            t_cols = [c for c in [ocpp_c, stn_col, sub_col, stat_c, tat_c] if c and c in stn_tickets.columns]
+                            if t_cols:
+                                st.write("📝 **Underlying Station Ticket Records:**")
+                                st.dataframe(stn_tickets[t_cols], use_container_width=True, height=180)
             else:
                 st.success("✅ Zero repetitive station faults detected in current period dataset.")
         else:
@@ -1951,7 +2079,7 @@ def run_streamlit_app():
                         'PM Pending': '{:,}',
                         'Advance PM Done': '{:,}',
                         'PM Efficiency (%)': '{:.1f}%'
-                    }).background_gradient(subset=['PM Efficiency (%)'], cmap='Greens'),
+                    }).background_gradient(subset=['PM Efficiency (%)'], cmap='Reds'),
                     use_container_width=True,
                     height=300
                 )
@@ -2030,7 +2158,7 @@ def run_streamlit_app():
                 x_col=f'Period ({period_choice})',
                 y_cols=['Stations Scheduled', 'PM Done', 'PM Pending'],
                 title=f"Scheduled Stations vs Completion by {period_choice}",
-                colors=['#2563EB', '#16A34A', '#DC2626']
+                colors=['#991B1B', '#DC2626', '#EF4444']
             )
 
         with c_per_tbl:
@@ -2043,7 +2171,7 @@ def run_streamlit_app():
                     'PM Done': '{:,}',
                     'PM Pending': '{:,}',
                     'PM Efficiency (%)': '{:.1f}%'
-                }).background_gradient(subset=['PM Efficiency (%)'], cmap='Blues'),
+                }).background_gradient(subset=['PM Efficiency (%)'], cmap='Reds'),
                 use_container_width=True,
                 height=280
             )
