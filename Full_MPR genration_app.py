@@ -561,8 +561,8 @@ def build_issue_dashboard(wb, issue_df, irange):
 
     row = 4
     zme_header_row = row + 1
-    row = section_title(ws, row, '1. Issue Summary & CM / TAT Efficiency by ZME', 7)
-    row = header_row(ws, row, ['ZME Name', 'Faults Received', 'Open Faults', 'Closed Faults', 'Closed Within TAT', 'Closed Without TAT', 'CM / TAT Efficiency %'])
+    row = section_title(ws, row, '1. Issue Summary, CM Efficiency & TAT Efficiency by ZME', 8)
+    row = header_row(ws, row, ['ZME Name', 'Faults Received', 'Open Faults', 'Closed Faults', 'Closed Within TAT', 'Closed Without TAT', 'CM Efficiency %', 'TAT Efficiency %'])
 
     zme_col = find_col(issue_df, ['ZME', 'ZME Name', 'ZME_Name', 'Zone Manager'])
     zme_start = row
@@ -574,9 +574,10 @@ def build_issue_dashboard(wb, issue_df, irange):
             closed_val = int(zme_sub['_Is_Closed_'].sum())
             within_val = int(zme_sub['_Is_Closed_Within_'].sum())
             without_val = int(zme_sub['_Is_Closed_Without_'].sum())
-            eff_val = (within_val / closed_val) if closed_val > 0 else 0.0
+            cm_eff_val = (within_val / closed_val) if closed_val > 0 else 0.0
+            tat_eff_val = (within_val / total_val) if total_val > 0 else 0.0
 
-            row = data_row(ws, row, [str(zme), total_val, open_val, closed_val, within_val, without_val, eff_val], pct_cols={6})
+            row = data_row(ws, row, [str(zme), total_val, open_val, closed_val, within_val, without_val, cm_eff_val, tat_eff_val], pct_cols={6, 7})
 
     zme_end = row - 1
     if zme_end >= zme_start:
@@ -593,12 +594,12 @@ def build_issue_dashboard(wb, issue_df, irange):
         chart1.set_categories(cats1)
         chart1.width = 16
         chart1.height = 9
-        ws.add_chart(chart1, "I4")
+        ws.add_chart(chart1, "J4")
 
     row += 1
     zone_header_row = row + 1
-    row = section_title(ws, row, '2. Issue Summary & CM / TAT Efficiency by Zone', 7)
-    row = header_row(ws, row, ['Zone', 'Faults Received', 'Open Faults', 'Closed Faults', 'Closed Within TAT', 'Closed Without TAT', 'CM / TAT Efficiency %'])
+    row = section_title(ws, row, '2. Issue Summary, CM Efficiency & TAT Efficiency by Zone', 8)
+    row = header_row(ws, row, ['Zone', 'Faults Received', 'Open Faults', 'Closed Faults', 'Closed Within TAT', 'Closed Without TAT', 'CM Efficiency %', 'TAT Efficiency %'])
 
     zone_start = row
     zone_col = find_col(issue_df, ['Zone', 'Zone Name', 'Region'])
@@ -610,9 +611,10 @@ def build_issue_dashboard(wb, issue_df, irange):
             closed_val = int(zone_sub['_Is_Closed_'].sum())
             within_val = int(zone_sub['_Is_Closed_Within_'].sum())
             without_val = int(zone_sub['_Is_Closed_Without_'].sum())
-            eff_val = (within_val / closed_val) if closed_val > 0 else 0.0
+            cm_eff_val = (within_val / closed_val) if closed_val > 0 else 0.0
+            tat_eff_val = (within_val / total_val) if total_val > 0 else 0.0
 
-            row = data_row(ws, row, [str(zone), total_val, open_val, closed_val, within_val, without_val, eff_val], pct_cols={6})
+            row = data_row(ws, row, [str(zone), total_val, open_val, closed_val, within_val, without_val, cm_eff_val, tat_eff_val], pct_cols={6, 7})
 
     zone_end = row - 1
     if zone_end >= zone_start:
@@ -629,7 +631,7 @@ def build_issue_dashboard(wb, issue_df, irange):
         chart2.set_categories(cats2)
         chart2.width = 16
         chart2.height = 9
-        ws.add_chart(chart2, f"I{zone_header_row - 1}")
+        ws.add_chart(chart2, f"J{zone_header_row - 1}")
 
     row += 1
     row = section_title(ws, row, '3. Repetitive Faults (same Station ID + Issue Sub-Type, 2+ occurrences)', 5)
@@ -1462,9 +1464,11 @@ def run_streamlit_app():
 
         # Formula: CM Efficiency = Number of Faults closed within TAT / Total closed faults
         cm_eff_closed = (closed_within / total_closed * 100) if total_closed > 0 else 0.0
+        # Formula: TAT Efficiency = Number of Faults closed within TAT / Total Faults Received
+        tat_eff_total = (closed_within / total_issues * 100) if total_issues > 0 else 0.0
 
-        # High-Impact KPI Row (6 Columns)
-        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        # High-Impact KPI Row (7 Columns)
+        c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
         with c1:
             st.markdown(f"""
                 <div class="metric-card darkred">
@@ -1508,16 +1512,24 @@ def run_streamlit_app():
         with c6:
             st.markdown(f"""
                 <div class="metric-card {'green' if cm_eff_closed >= 85 else 'amber'}">
-                    <div class="metric-label">CM / TAT Efficiency</div>
+                    <div class="metric-label">CM Efficiency</div>
                     <div class="metric-val">{cm_eff_closed:.1f}%</div>
-                    <div class="metric-sub">Target Benchmark: ≥ 85.0%</div>
+                    <div class="metric-sub">Within TAT / Closed</div>
+                </div>
+            """, unsafe_allow_html=True)
+        with c7:
+            st.markdown(f"""
+                <div class="metric-card {'green' if tat_eff_total >= 80 else 'amber'}">
+                    <div class="metric-label">TAT Efficiency</div>
+                    <div class="metric-val">{tat_eff_total:.1f}%</div>
+                    <div class="metric-sub">Within TAT / Received</div>
                 </div>
             """, unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
 
         # 1. ZME Performance & CM / TAT Efficiency Breakdown
-        st.markdown('<div class="section-header">1. ZME Performance & CM / TAT Efficiency Breakdown</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-header">1. ZME Performance, CM & TAT Efficiency Breakdown</div>', unsafe_allow_html=True)
         col_zme_c, col_zme_t = st.columns([6, 6])
         zme_col = find_col(filtered_issue_df, ['ZME', 'ZME Name', 'ZME_Name', 'Zone Manager'])
 
@@ -1530,8 +1542,8 @@ def run_streamlit_app():
                 Closed_Without_TAT=('_Is_Closed_Without_', 'sum')
             ).reset_index()
 
-            # CM Efficiency % = Closed Within TAT / Total Closed Faults
             zme_df['CM Efficiency %'] = (zme_df['Closed_Within_TAT'] / zme_df['Closed_Faults'].replace(0, pd.NA) * 100).fillna(0.0).round(1)
+            zme_df['TAT Efficiency %'] = (zme_df['Closed_Within_TAT'] / zme_df['Faults_Received'].replace(0, pd.NA) * 100).fillna(0.0).round(1)
             zme_df = zme_df.rename(columns={zme_col: 'ZME Name'}).sort_values(by='Faults_Received', ascending=False)
 
             with col_zme_c:
@@ -1544,16 +1556,17 @@ def run_streamlit_app():
                 )
 
             with col_zme_t:
-                st.write("##### 📊 ZME Fault & CM Efficiency Table")
+                st.write("##### 📊 ZME Fault & Efficiency Table")
                 st.dataframe(
-                    zme_df[['ZME Name', 'Faults_Received', 'Open_Faults', 'Closed_Faults', 'Closed_Within_TAT', 'Closed_Without_TAT', 'CM Efficiency %']].style.format({
+                    zme_df[['ZME Name', 'Faults_Received', 'Open_Faults', 'Closed_Faults', 'Closed_Within_TAT', 'Closed_Without_TAT', 'CM Efficiency %', 'TAT Efficiency %']].style.format({
                         'Faults_Received': '{:,}',
                         'Open_Faults': '{:,}',
                         'Closed_Faults': '{:,}',
                         'Closed_Within_TAT': '{:,}',
                         'Closed_Without_TAT': '{:,}',
-                        'CM Efficiency %': '{:.1f}%'
-                    }).background_gradient(subset=['CM Efficiency %'], cmap='Blues'),
+                        'CM Efficiency %': '{:.1f}%',
+                        'TAT Efficiency %': '{:.1f}%'
+                    }).background_gradient(subset=['CM Efficiency %', 'TAT Efficiency %'], cmap='Blues'),
                     use_container_width=True,
                     height=300
                 )
@@ -1576,7 +1589,7 @@ def run_streamlit_app():
             )
 
         with col_zone_chart:
-            st.markdown('<div class="section-header">🏢 3. Zone CM / TAT Efficiency (Grouped Chart & Table)</div>', unsafe_allow_html=True)
+            st.markdown('<div class="section-header">🏢 3. Zone CM & TAT Efficiency (Grouped Chart & Table)</div>', unsafe_allow_html=True)
             zone_col = find_col(filtered_issue_df, ['Zone', 'Zone Name', 'Region'])
             if zone_col:
                 zone_df = filtered_issue_df.groupby(zone_col).agg(
@@ -1588,6 +1601,7 @@ def run_streamlit_app():
                 ).reset_index()
 
                 zone_df['CM Efficiency %'] = (zone_df['Closed_Within_TAT'] / zone_df['Closed_Faults'].replace(0, pd.NA) * 100).fillna(0.0).round(1)
+                zone_df['TAT Efficiency %'] = (zone_df['Closed_Within_TAT'] / zone_df['Faults_Received'].replace(0, pd.NA) * 100).fillna(0.0).round(1)
                 zone_df = zone_df.rename(columns={zone_col: 'Zone'}).sort_values(by='Faults_Received', ascending=False)
 
                 plot_grouped_bar(
@@ -1599,14 +1613,15 @@ def run_streamlit_app():
                 )
 
                 st.dataframe(
-                    zone_df[['Zone', 'Faults_Received', 'Open_Faults', 'Closed_Faults', 'Closed_Within_TAT', 'Closed_Without_TAT', 'CM Efficiency %']].style.format({
+                    zone_df[['Zone', 'Faults_Received', 'Open_Faults', 'Closed_Faults', 'Closed_Within_TAT', 'Closed_Without_TAT', 'CM Efficiency %', 'TAT Efficiency %']].style.format({
                         'Faults_Received': '{:,}',
                         'Open_Faults': '{:,}',
                         'Closed_Faults': '{:,}',
                         'Closed_Within_TAT': '{:,}',
                         'Closed_Without_TAT': '{:,}',
-                        'CM Efficiency %': '{:.1f}%'
-                    }).background_gradient(subset=['CM Efficiency %'], cmap='Greens'),
+                        'CM Efficiency %': '{:.1f}%',
+                        'TAT Efficiency %': '{:.1f}%'
+                    }).background_gradient(subset=['CM Efficiency %', 'TAT Efficiency %'], cmap='Greens'),
                     use_container_width=True
                 )
             else:
