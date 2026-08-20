@@ -787,87 +787,99 @@ def run_streamlit_app():
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
         
-        /* Force White Background on Main Container & Header */
+        /* Force Crisp Clean Background on Main Container & Header */
         .stApp, [data-testid="stMain"], [data-testid="stHeader"] {
-            background-color: #FFFFFF !important;
+            background-color: #F8FAFC !important;
         }
 
         [data-testid="stSidebar"] {
-            background-color: #F8FAFC !important;
+            background-color: #FFFFFF !important;
             border-right: 1px solid #E2E8F0 !important;
         }
 
-        /* Executive Typography for High-Readability Presentations */
+        /* Executive Typography */
         html, body, [class*="css"], p, span, label, div {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-            color: #0F172A;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            color: #1E293B !important;
         }
 
-        /* Executive Red Buttons with Glow */
-        .stButton > button, div[data-testid="stDownloadButton"] > button {
-            background: linear-gradient(135deg, #991B1B 0%, #DC2626 100%) !important;
-            color: #FFFFFF !important;
-            border-radius: 8px !important;
+        h1, h2, h3, h4, h5, h6 {
+            color: #0F172A !important;
             font-weight: 800 !important;
-            font-size: 0.95rem !important;
+            letter-spacing: -0.02em !important;
+        }
+
+        /* Executive Crimson Buttons */
+        .stButton > button, div[data-testid="stDownloadButton"] > button {
+            background: linear-gradient(135deg, #801B1B 0%, #B91C1C 50%, #DC2626 100%) !important;
+            color: #FFFFFF !important;
+            border-radius: 10px !important;
+            font-weight: 700 !important;
+            font-size: 0.92rem !important;
             border: none !important;
             padding: 0.65rem 1.4rem !important;
-            box-shadow: 0 4px 14px rgba(185, 28, 28, 0.28) !important;
-            transition: all 0.2s ease !important;
-            letter-spacing: 0.02em !important;
+            box-shadow: 0 4px 14px rgba(185, 28, 28, 0.25) !important;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+            letter-spacing: 0.01em !important;
         }
         .stButton > button:hover, div[data-testid="stDownloadButton"] > button:hover {
-            background: linear-gradient(135deg, #7F1D1D 0%, #B91C1C 100%) !important;
-            box-shadow: 0 6px 20px rgba(153, 27, 27, 0.42) !important;
-            transform: translateY(-1px) !important;
+            background: linear-gradient(135deg, #7F1D1D 0%, #991B1B 50%, #B91C1C 100%) !important;
+            box-shadow: 0 6px 20px rgba(153, 27, 27, 0.38) !important;
+            transform: translateY(-2px) !important;
         }
 
         /* Streamlit Tabs Red Accent */
         button[data-baseweb="tab"] {
-            font-weight: 800 !important;
-            color: #475569 !important;
-            font-size: 1rem !important;
+            font-weight: 700 !important;
+            color: #64748B !important;
+            font-size: 0.95rem !important;
             padding: 0.75rem 1.25rem !important;
+            border-radius: 8px 8px 0 0 !important;
+            transition: color 0.15s ease !important;
+        }
+        button[data-baseweb="tab"]:hover {
+            color: #991B1B !important;
         }
         button[data-baseweb="tab"][aria-selected="true"] {
             color: #991B1B !important;
-            border-bottom-color: #DC2626 !important;
+            border-bottom: 3px solid #DC2626 !important;
+            background-color: rgba(220, 38, 38, 0.04) !important;
         }
         div[data-baseweb="tab-highlight"] {
             background-color: #DC2626 !important;
             height: 3px !important;
         }
 
-        /* Executive Red Header Box */
+        /* Executive Banner Header Box */
         .exec-header-box {
-            background: linear-gradient(135deg, #7F1D1D 0%, #B91C1C 45%, #991B1B 100%);
-            padding: 1.5rem 2.2rem;
-            border-radius: 14px;
+            background: linear-gradient(135deg, #6B1111 0%, #991B1B 45%, #B91C1C 100%);
+            padding: 1.6rem 2.2rem;
+            border-radius: 16px;
             color: #FFFFFF;
-            box-shadow: 0 12px 30px rgba(185, 28, 28, 0.22);
+            box-shadow: 0 10px 28px rgba(153, 27, 27, 0.20);
             margin-bottom: 1.5rem;
-            border-left: 8px solid #DC2626;
+            border-left: 8px solid #EF4444;
         }
 
         .exec-badge {
-            background-color: rgba(255, 255, 255, 0.18);
+            background: rgba(255, 255, 255, 0.18);
             color: #FFFFFF;
-            font-size: 0.73rem;
+            font-size: 0.72rem;
             font-weight: 800;
             padding: 5px 14px;
             border-radius: 20px;
-            letter-spacing: 0.09em;
+            letter-spacing: 0.08em;
             text-transform: uppercase;
             display: inline-block;
-            margin-bottom: 0.5rem;
+            margin-bottom: 0.6rem;
             border: 1px solid rgba(255, 255, 255, 0.35);
-            backdrop-filter: blur(4px);
+            backdrop-filter: blur(6px);
         }
 
         .exec-title {
             font-size: 2.1rem;
             font-weight: 900;
-            color: #FFFFFF;
+            color: #FFFFFF !important;
             margin: 0;
             line-height: 1.2;
             letter-spacing: -0.025em;
@@ -875,7 +887,7 @@ def run_streamlit_app():
 
         .exec-subtitle {
             font-size: 0.95rem;
-            color: #FEE2E2;
+            color: #FEE2E2 !important;
             margin-top: 0.35rem;
             margin-bottom: 0;
             font-weight: 500;
@@ -885,60 +897,70 @@ def run_streamlit_app():
         .metric-card {
             background: #FFFFFF;
             border: 1px solid #E2E8F0;
-            border-radius: 12px;
-            padding: 1.1rem 1.3rem;
-            box-shadow: 0 4px 16px rgba(15, 23, 42, 0.04);
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            border-radius: 14px;
+            padding: 1.15rem 1.35rem;
+            box-shadow: 0 4px 12px rgba(15, 23, 42, 0.03);
+            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
         }
         .metric-card:hover {
             transform: translateY(-3px);
-            box-shadow: 0 8px 24px rgba(220, 38, 38, 0.12);
+            box-shadow: 0 10px 25px rgba(15, 23, 42, 0.08);
+            border-color: #CBD5E1;
         }
         .metric-card.red { border-top: 5px solid #DC2626; }
         .metric-card.darkred { border-top: 5px solid #991B1B; }
         .metric-card.grey { border-top: 5px solid #475569; }
-        .metric-card.green { border-top: 5px solid #10B981; }
-        .metric-card.amber { border-top: 5px solid #F59E0B; }
+        .metric-card.green { border-top: 5px solid #059669; }
+        .metric-card.amber { border-top: 5px solid #D97706; }
 
         .metric-label {
-            font-size: 0.74rem;
+            font-size: 0.73rem;
             font-weight: 800;
-            color: #475569;
+            color: #64748B !important;
             text-transform: uppercase;
             letter-spacing: 0.07em;
         }
         .metric-val {
             font-size: 1.85rem;
             font-weight: 900;
-            color: #0F172A;
+            color: #0F172A !important;
             margin-top: 0.25rem;
             letter-spacing: -0.02em;
         }
         .metric-sub {
             font-size: 0.74rem;
-            color: #64748B;
-            margin-top: 0.18rem;
-            font-weight: 500;
+            color: #475569 !important;
+            margin-top: 0.2rem;
+            font-weight: 600;
         }
 
         .section-header {
             font-size: 1.15rem;
             font-weight: 800;
-            color: #991B1B;
-            margin-top: 1rem;
-            margin-bottom: 0.8rem;
+            color: #991B1B !important;
+            margin-top: 1.2rem;
+            margin-bottom: 0.9rem;
             display: flex;
             align-items: center;
             gap: 0.5rem;
             border-bottom: 2px solid #FEE2E2;
-            padding-bottom: 0.4rem;
+            padding-bottom: 0.45rem;
             letter-spacing: -0.01em;
         }
 
-        .stDataFrame {
-            border-radius: 10px;
-            overflow: hidden;
-            border: 1px solid #E2E8F0;
+        /* Streamlit Container & Table Styling */
+        [data-testid="stForm"], .stDataFrame, div[data-testid="stExpander"] {
+            background-color: #FFFFFF !important;
+            border-radius: 12px !important;
+            border: 1px solid #E2E8F0 !important;
+            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.02) !important;
+        }
+
+        /* Radio & Selectbox Styling */
+        div[class*="stRadio"] label, div[class*="stSelectbox"] label {
+            font-weight: 700 !important;
+            color: #334155 !important;
+            font-size: 0.88rem !important;
         }
         </style>
     """, unsafe_allow_html=True)
