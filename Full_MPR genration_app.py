@@ -1406,16 +1406,19 @@ def run_streamlit_app():
     timestamp = datetime.now().strftime("%Y-%m")
     out_filename = f"ChargeZone_MPR_Report_{timestamp}.xlsx"
 
-    excel_bytes = generate_mpr_workbook_from_dfs(filtered_issue_df, filtered_pm_df)
+    if st.sidebar.button("⚡ Prepare MPR Excel Report", use_container_width=True, type="primary"):
+        with st.spinner("Building Excel report..."):
+            st.session_state['mpr_excel_bytes'] = generate_mpr_workbook_from_dfs(filtered_issue_df, filtered_pm_df)
+            st.session_state['mpr_excel_filename'] = out_filename
 
-    st.sidebar.download_button(
-        label="⚡ Download MPR Excel Report",
-        data=excel_bytes,
-        file_name=out_filename,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-        type="primary"
-    )
+    if 'mpr_excel_bytes' in st.session_state:
+        st.sidebar.download_button(
+            label="⬇️ Download MPR Excel Report",
+            data=st.session_state['mpr_excel_bytes'],
+            file_name=st.session_state.get('mpr_excel_filename', out_filename),
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
 
     # Main Tabs
     tab_issues, tab_pm, tab_raw = st.tabs([
