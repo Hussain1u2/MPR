@@ -124,7 +124,7 @@ def load_issue_tracker(source):
             wb = openpyxl.load_workbook(source_stream, data_only=True, read_only=True)
             sheet_name = select_sheet_name(wb.sheetnames, preferred_sheets, 'issue')
             ws = wb[sheet_name]
-            rows = [tuple(cell for cell in row) for row in ws.iter_rows(values_only=True)]
+            rows = list(ws.iter_rows(values_only=True))
             wb.close()
             if not rows:
                 return pd.DataFrame()
@@ -144,7 +144,7 @@ def load_issue_tracker(source):
             wb = source
         sheet_name = select_sheet_name(wb.sheetnames, preferred_sheets, 'issue')
         ws = wb[sheet_name]
-        rows = [tuple(cell for cell in row) for row in ws.iter_rows(values_only=True)]
+        rows = list(ws.iter_rows(values_only=True))
         if hasattr(wb, 'close'):
             wb.close()
         if not rows:
@@ -155,6 +155,15 @@ def load_issue_tracker(source):
     df = ensure_unique_columns(df)
     if 'Issue Date' in df.columns:
         df['Issue Date Parsed'] = pd.to_datetime(df['Issue Date'], errors='coerce')
+
+    if 'TAT Compliance' in df.columns:
+        tat_upper = df['TAT Compliance'].astype(str).str.upper()
+        df['Is_TAT_Compliant'] = (tat_upper == 'YES')
+        df['Is_TAT_Breached'] = (tat_upper == 'NO')
+    else:
+        df['Is_TAT_Compliant'] = False
+        df['Is_TAT_Breached'] = False
+
     return df
 
 
@@ -173,10 +182,17 @@ def load_pm_tracker(source):
                 df['Due Date Parsed'] = pd.to_datetime(df['Due Date'], errors='coerce')
             if 'Actual Completion Date' in df.columns:
                 df['Actual Completion Date Parsed'] = pd.to_datetime(df['Actual Completion Date'], errors='coerce')
+            if 'PM Status' in df.columns:
+                pm_upper = df['PM Status'].astype(str).str.upper()
+                df['Is_PM_Done'] = (pm_upper == 'YES')
+                df['Is_PM_Pending'] = (pm_upper == 'NO')
+            else:
+                df['Is_PM_Done'] = False
+                df['Is_PM_Pending'] = False
             return df
         sheet_name = select_sheet_name(wb.sheetnames, preferred_sheets, 'pm')
         ws = wb[sheet_name]
-        rows = [tuple(cell for cell in row) for row in ws.iter_rows(values_only=True)]
+        rows = list(ws.iter_rows(values_only=True))
         wb.close()
         if not rows:
             return pd.DataFrame()
@@ -225,7 +241,7 @@ def load_pm_tracker(source):
             wb = source
         sheet_name = select_sheet_name(wb.sheetnames, preferred_sheets, 'pm')
         ws = wb[sheet_name]
-        rows = [tuple(cell for cell in row) for row in ws.iter_rows(values_only=True)]
+        rows = list(ws.iter_rows(values_only=True))
         if hasattr(wb, 'close'):
             wb.close()
         if not rows:
@@ -269,28 +285,51 @@ def load_pm_tracker(source):
         df['Due Date Parsed'] = pd.to_datetime(df['Due Date'], errors='coerce')
     if 'Actual Completion Date' in df.columns:
         df['Actual Completion Date Parsed'] = pd.to_datetime(df['Actual Completion Date'], errors='coerce')
+
+    if 'PM Status' in df.columns:
+        pm_upper = df['PM Status'].astype(str).str.upper()
+        df['Is_PM_Done'] = (pm_upper == 'YES')
+        df['Is_PM_Pending'] = (pm_upper == 'NO')
+    else:
+        df['Is_PM_Done'] = False
+        df['Is_PM_Pending'] = False
+
     return df
 
 
 def write_data_sheet(wb, name, df, table_name, date_cols):
     ws = wb.create_sheet(name)
-    clean_df = df.drop(columns=[c for c in ['Issue Date Parsed', 'Due Date Parsed', 'Actual Completion Date Parsed'] if c in df.columns])
-    for c, col in enumerate(clean_df.columns, start=1):
-        cell = ws.cell(row=1, column=c, value=col)
+    exclude_cols = {'Issue Date Parsed', 'Due Date Parsed', 'Actual Completion Date Parsed', 'Is_TAT_Compliant', 'Is_TAT_Breached', 'Is_PM_Done', 'Is_PM_Pending'}
+    clean_df = df.drop(columns=[c for c in exclude_cols if c in df.columns])
+
+    # Header
+    ws.append(list(clean_df.columns))
+    for c in range(1, len(clean_df.columns) + 1):
+        cell = ws.cell(row=1, column=c)
         cell.font, cell.fill = HEADER_FONT, HEADER_FILL
         cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
-    for r, rec in enumerate(clean_df.itertuples(index=False), start=2):
-        for c, val in enumerate(rec, start=1):
-            col_name = clean_df.columns[c - 1]
+    date_col_indices = {i + 1 for i, col in enumerate(clean_df.columns) if col in date_cols}
+
+    # Fast row appending without per-cell object allocations
+    for rec in clean_df.itertuples(index=False):
+        row_vals = []
+        for val in rec:
             if pd.isna(val):
-                val = None
+                row_vals.append(None)
             elif isinstance(val, pd.Timestamp):
-                val = val.to_pydatetime()
-            cell = ws.cell(row=r, column=c, value=val)
-            cell.font, cell.border = CELL_FONT, BORDER
-            if col_name in date_cols and val is not None:
-                cell.number_format = DATE_FMT
+                row_vals.append(val.to_pydatetime())
+            else:
+                row_vals.append(val)
+        ws.append(row_vals)
+
+    # Format date cells only
+    if date_col_indices:
+        for r in range(2, len(clean_df) + 2):
+            for c in date_col_indices:
+                cell = ws.cell(row=r, column=c)
+                if cell.value is not None:
+                    cell.number_format = DATE_FMT
 
     for c, col in enumerate(clean_df.columns, start=1):
         ws.column_dimensions[get_column_letter(c)].width = max(12, min(28, len(str(col)) + 2))
@@ -305,27 +344,24 @@ def write_data_sheet(wb, name, df, table_name, date_cols):
 
 def add_pm_helper_columns(ws, pm_df, pcol, last_row):
     due_col, done_col = pcol.get('Due Date', 'G'), pcol.get('Actual Completion Date', 'J')
-    adv_idx = len(pm_df.columns) - (1 if 'Due Date Parsed' in pm_df.columns else 0) - (1 if 'Actual Completion Date Parsed' in pm_df.columns else 0) + 1
+    exclude_cols = {'Issue Date Parsed', 'Due Date Parsed', 'Actual Completion Date Parsed', 'Is_TAT_Compliant', 'Is_TAT_Breached', 'Is_PM_Done', 'Is_PM_Pending'}
+    clean_cols = [c for c in pm_df.columns if c not in exclude_cols]
+    adv_idx = len(clean_cols) + 1
     adv_letter = get_column_letter(adv_idx)
-    ws.cell(row=1, column=adv_idx, value='Advance PM Done').font = HEADER_FONT
-    ws.cell(row=1, column=adv_idx).fill = HEADER_FILL
+
+    h1 = ws.cell(row=1, column=adv_idx, value='Advance PM Done')
+    h1.font, h1.fill = HEADER_FONT, HEADER_FILL
     for r in range(2, last_row + 1):
-        formula = (f'=IF(AND(${done_col}{r}<>"",${due_col}{r}<>"",${done_col}{r}<${due_col}{r}),"Yes",'
-                   f'IF(${done_col}{r}<>"","No",""))')
-        cell = ws.cell(row=r, column=adv_idx, value=formula)
-        cell.font, cell.border = CELL_FONT, BORDER
+        ws.cell(row=r, column=adv_idx, value=f'=IF(AND(${done_col}{r}<>"",${due_col}{r}<>"",${done_col}{r}<${due_col}{r}),"Yes",IF(${done_col}{r}<>"","No",""))')
     ws.column_dimensions[adv_letter].width = 16
 
     zme_col, station_col = pcol.get('ZME', 'A'), pcol.get('Station ID', 'B')
     occ_idx = adv_idx + 1
     occ_letter = get_column_letter(occ_idx)
-    ws.cell(row=1, column=occ_idx, value='First Station Occurrence').font = HEADER_FONT
-    ws.cell(row=1, column=occ_idx).fill = HEADER_FILL
+    h2 = ws.cell(row=1, column=occ_idx, value='First Station Occurrence')
+    h2.font, h2.fill = HEADER_FONT, HEADER_FILL
     for r in range(2, last_row + 1):
-        formula = (f'=IF(COUNTIFS(${zme_col}$2:${zme_col}{r},${zme_col}{r},'
-                   f'${station_col}$2:${station_col}{r},${station_col}{r})=1,1,0)')
-        cell = ws.cell(row=r, column=occ_idx, value=formula)
-        cell.font, cell.border = CELL_FONT, BORDER
+        ws.cell(row=r, column=occ_idx, value=f'=IF(COUNTIFS(${zme_col}$2:${zme_col}{r},${zme_col}{r},${station_col}$2:${station_col}{r},${station_col}{r})=1,1,0)')
     ws.column_dimensions[occ_letter].width = 20
 
     ws.tables['PMTable'].ref = f"A1:{occ_letter}{last_row}"
@@ -466,14 +502,21 @@ def build_pm_dashboard(wb, pm_df, prange):
 
 
 @st.cache_data(show_spinner=False)
-def generate_workbook_cached(source_bytes_or_path, pm_bytes_or_path=None):
-    """Cached workbook & DataFrame generator for instant responsive updates."""
+def get_dataframes_cached(source_bytes_or_path, pm_bytes_or_path=None):
+    """Cached DataFrame parser for instant dashboard rendering (<0.2s)."""
     if pm_bytes_or_path is None:
         issue_df = load_issue_tracker(source_bytes_or_path)
         pm_df = load_pm_tracker(source_bytes_or_path)
     else:
         issue_df = load_issue_tracker(source_bytes_or_path)
         pm_df = load_pm_tracker(pm_bytes_or_path)
+    return issue_df, pm_df
+
+
+@st.cache_data(show_spinner=False)
+def generate_workbook_cached(source_bytes_or_path, pm_bytes_or_path=None):
+    """Cached workbook builder for Excel export generation."""
+    issue_df, pm_df = get_dataframes_cached(source_bytes_or_path, pm_bytes_or_path)
 
     wb = Workbook()
     wb.remove(wb.active)
@@ -481,13 +524,14 @@ def generate_workbook_cached(source_bytes_or_path, pm_bytes_or_path=None):
     issue_ws, issue_last = write_data_sheet(
         wb, 'Issue Data', issue_df, 'IssueTable',
         date_cols=['Issue Date', 'Resolution Date', 'Restoration Date'])
-    clean_issue_cols = [c for c in issue_df.columns if c not in ['Issue Date Parsed', 'Due Date Parsed', 'Actual Completion Date Parsed']]
+    exclude_cols = {'Issue Date Parsed', 'Due Date Parsed', 'Actual Completion Date Parsed', 'Is_TAT_Compliant', 'Is_TAT_Breached', 'Is_PM_Done', 'Is_PM_Pending'}
+    clean_issue_cols = [c for c in issue_df.columns if c not in exclude_cols]
     icol = {name: get_column_letter(i + 1) for i, name in enumerate(clean_issue_cols)}
 
     pm_ws, pm_last = write_data_sheet(
         wb, 'PM Data', pm_df, 'PMTable',
         date_cols=['Go Live Date', 'Due Date', 'Actual Completion Date'])
-    clean_pm_cols = [c for c in pm_df.columns if c not in ['Issue Date Parsed', 'Due Date Parsed', 'Actual Completion Date Parsed']]
+    clean_pm_cols = [c for c in pm_df.columns if c not in exclude_cols]
     pcol = {name: get_column_letter(i + 1) for i, name in enumerate(clean_pm_cols)}
     add_pm_helper_columns(pm_ws, pm_df, pcol, pm_last)
     pcol_full = {name: get_column_letter(i + 1)
@@ -508,33 +552,27 @@ def generate_workbook_cached(source_bytes_or_path, pm_bytes_or_path=None):
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
-    return buf.getvalue(), issue_df, pm_df
+    return buf.getvalue()
 
 
 def plot_pie_chart(labels, values, title, colors=None, hole=0.45):
     """Renders a responsive, high-contrast Donut/Pie Chart."""
-    dark_mode = st.session_state.get('dark_mode', False)
-    text_color = '#ffffff' if dark_mode else '#0F172A'
-    legend_color = '#cbd5e1' if dark_mode else '#475569'
-
     if HAS_PLOTLY:
         fig = go.Figure(data=[go.Pie(
             labels=labels,
             values=values,
             hole=hole,
-            marker_colors=colors if colors else ['#10b981', '#DC2626', '#475569', '#f59e0b', '#991B1B'],
+            marker_colors=colors if colors else ['#10B981', '#DC2626', '#475569', '#F59E0B', '#991B1B'],
             textinfo='percent+value',
             hoverinfo='label+percent+value',
-            insidetextfont=dict(color='#ffffff', size=13, family='Outfit')
+            insidetextfont=dict(color='#FFFFFF', size=13, family='Inter')
         )])
         fig.update_layout(
-            title=dict(text=title, font=dict(size=15, color=text_color, family='Outfit', weight='600')),
+            title=dict(text=title, font=dict(size=14, color='#0F172A', family='Inter', weight='bold')),
             margin=dict(l=15, r=15, t=45, b=15),
             height=300,
             showlegend=True,
-            legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5, font=dict(color=legend_color)),
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)'
+            legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5)
         )
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'responsive': True})
     else:
@@ -545,11 +583,6 @@ def plot_pie_chart(labels, values, title, colors=None, hole=0.45):
 
 def plot_vertical_bar(df, x_col, y_col, title, color_hex="#DC2626"):
     """Renders a clean vertical bar chart with exact value labels."""
-    dark_mode = st.session_state.get('dark_mode', False)
-    text_color = '#f8fafc' if dark_mode else '#0F172A'
-    grid_color = 'rgba(255,255,255,0.05)' if dark_mode else '#F1F5F9'
-    label_color = '#cbd5e1' if dark_mode else '#475569'
-
     if HAS_PLOTLY:
         fig = px.bar(
             df,
@@ -559,16 +592,15 @@ def plot_vertical_bar(df, x_col, y_col, title, color_hex="#DC2626"):
             text=y_col,
             color_discrete_sequence=[color_hex]
         )
-        fig.update_traces(texttemplate='%{text}', textposition='outside', textfont=dict(size=12, family='Outfit', color=label_color))
+        fig.update_traces(texttemplate='%{text}', textposition='outside', textfont=dict(size=12, family='Inter'))
         fig.update_layout(
             margin=dict(l=15, r=15, t=45, b=15),
             height=320,
-            font=dict(family='Outfit', color=text_color),
+            font=dict(family='Inter', color='#0F172A'),
             xaxis_title=x_col,
             yaxis_title=y_col,
-            paper_bgcolor='rgba(0,0,0,0)',
             plot_bgcolor='rgba(0,0,0,0)',
-            yaxis=dict(showgrid=True, gridcolor=grid_color)
+            yaxis=dict(showgrid=True, gridcolor='#F1F5F9')
         )
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'responsive': True})
     else:
@@ -578,14 +610,9 @@ def plot_vertical_bar(df, x_col, y_col, title, color_hex="#DC2626"):
 
 def plot_grouped_bar(df, x_col, y_cols, title, colors=None):
     """Renders a responsive multi-series grouped column chart."""
-    dark_mode = st.session_state.get('dark_mode', False)
-    text_color = '#f8fafc' if dark_mode else '#0F172A'
-    grid_color = 'rgba(255,255,255,0.05)' if dark_mode else '#F1F5F9'
-    legend_color = '#cbd5e1' if dark_mode else '#475569'
-
     if HAS_PLOTLY:
         fig = go.Figure()
-        palette = colors if colors else ['#DC2626', '#991B1B', '#475569', '#10b981']
+        palette = colors if colors else ['#DC2626', '#991B1B', '#475569', '#10B981']
         for idx, col in enumerate(y_cols):
             fig.add_trace(go.Bar(
                 name=col,
@@ -594,17 +621,16 @@ def plot_grouped_bar(df, x_col, y_cols, title, colors=None):
                 marker_color=palette[idx % len(palette)],
                 text=df[col],
                 textposition='auto',
-                textfont=dict(size=11, family='Outfit', color='#ffffff')
+                textfont=dict(size=11, family='Inter')
             ))
         fig.update_layout(
             barmode='group',
-            title=dict(text=title, font=dict(size=15, color=text_color, family='Outfit', weight='600')),
+            title=dict(text=title, font=dict(size=14, color='#0F172A', family='Inter', weight='bold')),
             margin=dict(l=15, r=15, t=45, b=15),
             height=320,
-            legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5, font=dict(color=legend_color)),
-            paper_bgcolor='rgba(0,0,0,0)',
+            legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
             plot_bgcolor='rgba(0,0,0,0)',
-            yaxis=dict(showgrid=True, gridcolor=grid_color)
+            yaxis=dict(showgrid=True, gridcolor='#F1F5F9')
         )
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'responsive': True})
     else:
@@ -620,199 +646,166 @@ def run_streamlit_app():
         initial_sidebar_state="expanded"
     )
 
-    st.sidebar.markdown("### ⚙️ Theme Settings")
-    dark_mode = st.sidebar.toggle("🌙 Dark Mode", value=st.session_state.get('dark_mode', False))
-    st.session_state['dark_mode'] = dark_mode
-    st.sidebar.markdown("---")
-
-    if dark_mode:
-        bg_main = "#0f172a"
-        bg_sidebar = "#020617"
-        text_color = "#f8fafc"
-        text_sub = "#94a3b8"
-        card_bg = "rgba(30, 41, 59, 0.5)"
-        card_hover = "rgba(30, 41, 59, 0.8)"
-        border_color = "rgba(255, 255, 255, 0.05)"
-    else:
-        bg_main = "#FFFFFF"
-        bg_sidebar = "#F8FAFC"
-        text_color = "#0F172A"
-        text_sub = "#64748B"
-        card_bg = "#FFFFFF"
-        card_hover = "#FFFFFF"
-        border_color = "#E2E8F0"
-
-    # Red & White theme CSS (with dynamic dark/light)
-    css = f"""
+    # Professional Executive Styling - Red, White & Slate Grey Theme
+    st.markdown("""
         <style>
-        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
         
-        .stApp, [data-testid="stMain"], [data-testid="stHeader"] {{
-            background-color: {bg_main} !important;
-        }}
+        /* Force White Background on Main Container & Header */
+        .stApp, [data-testid="stMain"], [data-testid="stHeader"] {
+            background-color: #FFFFFF !important;
+        }
 
-        [data-testid="stSidebar"] {{
-            background-color: {bg_sidebar} !important;
-            border-right: 1px solid {border_color} !important;
-        }}
+        [data-testid="stSidebar"] {
+            background-color: #F8FAFC !important;
+            border-right: 1px solid #E2E8F0 !important;
+        }
 
-        html, body, [class*="css"], p, span, label, div {{
-            font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
-            color: {text_color};
-        }}
+        /* Executive Typography for High-Readability Presentations */
+        html, body, [class*="css"], p, span, label, div {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            color: #0F172A;
+        }
 
-        /* Red Gradient Buttons */
-        .stButton > button, div[data-testid="stDownloadButton"] > button {{
+        /* Executive Red Buttons with Glow */
+        .stButton > button, div[data-testid="stDownloadButton"] > button {
             background: linear-gradient(135deg, #991B1B 0%, #DC2626 100%) !important;
-            color: #ffffff !important;
-            border-radius: 10px !important;
-            font-weight: 600 !important;
-            font-size: 1rem !important;
+            color: #FFFFFF !important;
+            border-radius: 8px !important;
+            font-weight: 800 !important;
+            font-size: 0.95rem !important;
             border: none !important;
             padding: 0.65rem 1.4rem !important;
-            box-shadow: 0 4px 15px rgba(220, 38, 38, 0.3) !important;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+            box-shadow: 0 4px 14px rgba(185, 28, 28, 0.28) !important;
+            transition: all 0.2s ease !important;
             letter-spacing: 0.02em !important;
-        }}
-        .stButton > button:hover, div[data-testid="stDownloadButton"] > button:hover {{
-            box-shadow: 0 6px 20px rgba(220, 38, 38, 0.5) !important;
-            transform: translateY(-2px) !important;
-        }}
+        }
+        .stButton > button:hover, div[data-testid="stDownloadButton"] > button:hover {
+            background: linear-gradient(135deg, #7F1D1D 0%, #B91C1C 100%) !important;
+            box-shadow: 0 6px 20px rgba(153, 27, 27, 0.42) !important;
+            transform: translateY(-1px) !important;
+        }
 
-        /* Streamlit Tabs */
-        button[data-baseweb="tab"] {{
-            font-weight: 600 !important;
-            color: {text_sub} !important;
-            font-size: 1.05rem !important;
+        /* Streamlit Tabs Red Accent */
+        button[data-baseweb="tab"] {
+            font-weight: 800 !important;
+            color: #475569 !important;
+            font-size: 1rem !important;
             padding: 0.75rem 1.25rem !important;
-            transition: color 0.3s ease !important;
-        }}
-        button[data-baseweb="tab"][aria-selected="true"] {{
-            color: #DC2626 !important;
+        }
+        button[data-baseweb="tab"][aria-selected="true"] {
+            color: #991B1B !important;
             border-bottom-color: #DC2626 !important;
-        }}
-        div[data-baseweb="tab-highlight"] {{
+        }
+        div[data-baseweb="tab-highlight"] {
             background-color: #DC2626 !important;
             height: 3px !important;
-            border-radius: 3px 3px 0 0 !important;
-        }}
+        }
 
-        /* Header Box - Always Red Gradient for brand */
-        .exec-header-box {{
+        /* Executive Red Header Box */
+        .exec-header-box {
             background: linear-gradient(135deg, #7F1D1D 0%, #B91C1C 45%, #991B1B 100%);
-            padding: 1.8rem 2.5rem;
-            border-radius: 16px;
-            color: #ffffff;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
-            margin-bottom: 2rem;
-            border-left: 6px solid #DC2626;
-            position: relative;
-            overflow: hidden;
-        }}
+            padding: 1.5rem 2.2rem;
+            border-radius: 14px;
+            color: #FFFFFF;
+            box-shadow: 0 12px 30px rgba(185, 28, 28, 0.22);
+            margin-bottom: 1.5rem;
+            border-left: 8px solid #DC2626;
+        }
 
-        .exec-badge {{
+        .exec-badge {
             background-color: rgba(255, 255, 255, 0.18);
-            color: #ffffff;
-            font-size: 0.75rem;
-            font-weight: 700;
-            padding: 6px 16px;
+            color: #FFFFFF;
+            font-size: 0.73rem;
+            font-weight: 800;
+            padding: 5px 14px;
             border-radius: 20px;
-            letter-spacing: 0.1em;
+            letter-spacing: 0.09em;
             text-transform: uppercase;
             display: inline-block;
-            margin-bottom: 0.8rem;
-            border: 1px solid rgba(255, 255, 255, 0.3);
-        }}
+            margin-bottom: 0.5rem;
+            border: 1px solid rgba(255, 255, 255, 0.35);
+            backdrop-filter: blur(4px);
+        }
 
-        .exec-title {{
-            font-size: 2.2rem;
-            font-weight: 800;
-            color: #ffffff;
+        .exec-title {
+            font-size: 2.1rem;
+            font-weight: 900;
+            color: #FFFFFF;
             margin: 0;
             line-height: 1.2;
-            letter-spacing: -0.02em;
-        }}
+            letter-spacing: -0.025em;
+        }
 
-        .exec-subtitle {{
-            font-size: 1rem;
+        .exec-subtitle {
+            font-size: 0.95rem;
             color: #FEE2E2;
-            margin-top: 0.5rem;
+            margin-top: 0.35rem;
             margin-bottom: 0;
-            font-weight: 400;
-        }}
+            font-weight: 500;
+        }
 
         /* Metric Cards */
-        .metric-card {{
-            background: {card_bg};
-            border: 1px solid {border_color};
-            border-radius: 16px;
-            padding: 1.5rem;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-            position: relative;
-            overflow: hidden;
-        }}
-        .metric-card::after {{
-            content: '';
-            position: absolute;
-            top: 0; left: 0; right: 0;
-            height: 4px;
-        }}
-        .metric-card:hover {{
-            transform: translateY(-4px);
-            box-shadow: 0 12px 30px rgba(220, 38, 38, 0.15);
-            background: {card_hover};
-            border-color: rgba(220, 38, 38, 0.3);
-        }}
-        .metric-card.red::after {{ background: linear-gradient(90deg, #f43f5e, #e11d48); }}
-        .metric-card.darkred::after {{ background: linear-gradient(90deg, #991B1B, #7F1D1D); }} 
-        .metric-card.grey::after {{ background: linear-gradient(90deg, #64748b, #475569); }}
-        .metric-card.green::after {{ background: linear-gradient(90deg, #10b981, #059669); }}
-        .metric-card.amber::after {{ background: linear-gradient(90deg, #f59e0b, #d97706); }}
+        .metric-card {
+            background: #FFFFFF;
+            border: 1px solid #E2E8F0;
+            border-radius: 12px;
+            padding: 1.1rem 1.3rem;
+            box-shadow: 0 4px 16px rgba(15, 23, 42, 0.04);
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .metric-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 8px 24px rgba(220, 38, 38, 0.12);
+        }
+        .metric-card.red { border-top: 5px solid #DC2626; }
+        .metric-card.darkred { border-top: 5px solid #991B1B; }
+        .metric-card.grey { border-top: 5px solid #475569; }
+        .metric-card.green { border-top: 5px solid #10B981; }
+        .metric-card.amber { border-top: 5px solid #F59E0B; }
 
-        .metric-label {{
-            font-size: 0.8rem;
-            font-weight: 600;
-            color: {text_sub};
+        .metric-label {
+            font-size: 0.74rem;
+            font-weight: 800;
+            color: #475569;
             text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }}
-        .metric-val {{
-            font-size: 2.2rem;
-            font-weight: 700;
-            color: {text_color};
-            margin-top: 0.5rem;
+            letter-spacing: 0.07em;
+        }
+        .metric-val {
+            font-size: 1.85rem;
+            font-weight: 900;
+            color: #0F172A;
+            margin-top: 0.25rem;
             letter-spacing: -0.02em;
-        }}
-        .metric-sub {{
-            font-size: 0.8rem;
-            color: {text_sub};
-            margin-top: 0.2rem;
-            font-weight: 400;
-        }}
+        }
+        .metric-sub {
+            font-size: 0.74rem;
+            color: #64748B;
+            margin-top: 0.18rem;
+            font-weight: 500;
+        }
 
-        .section-header {{
-            font-size: 1.3rem;
-            font-weight: 600;
-            color: #DC2626;
-            margin-top: 1.5rem;
-            margin-bottom: 1rem;
+        .section-header {
+            font-size: 1.15rem;
+            font-weight: 800;
+            color: #991B1B;
+            margin-top: 1rem;
+            margin-bottom: 0.8rem;
             display: flex;
             align-items: center;
             gap: 0.5rem;
-            border-bottom: 1px solid {border_color};
-            padding-bottom: 0.6rem;
+            border-bottom: 2px solid #FEE2E2;
+            padding-bottom: 0.4rem;
             letter-spacing: -0.01em;
-        }}
+        }
 
-        .stDataFrame {{
-            border-radius: 12px;
+        .stDataFrame {
+            border-radius: 10px;
             overflow: hidden;
-            border: 1px solid {border_color};
-        }}
+            border: 1px solid #E2E8F0;
+        }
         </style>
-    """
-    st.markdown(css, unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
 
     # Executive Meeting Presentation Header
     st.markdown("""
@@ -823,83 +816,16 @@ def run_streamlit_app():
                     <h1 class="exec-title">Monthly Progress Report (MPR) & PM Governance</h1>
                     <p class="exec-subtitle">C-Suite Operations Deck: SLA Performance, Preventive Maintenance (PM F-01) & Infrastructure Analytics.</p>
                 </div>
-                <div style="text-align: right; background: rgba(255, 255, 255, 0.1); padding: 10px 20px; border-radius: 12px; border: 1px solid rgba(255, 255, 255, 0.15); backdrop-filter: blur(8px);">
-                    <div style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: #94a3b8; font-weight: 600;">Executive Deck</div>
-                    <div style="font-size: 1.15rem; font-weight: 800; color: #ffffff;">FY 2026-27 Review</div>
+                <div style="text-align: right; background: rgba(255, 255, 255, 0.15); padding: 8px 18px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.3);">
+                    <div style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.09em; color: #FEE2E2; font-weight: 700;">Executive Deck</div>
+                    <div style="font-size: 1.05rem; font-weight: 900; color: #FFFFFF;">FY 2026-27 Review</div>
                 </div>
             </div>
         </div>
     """, unsafe_allow_html=True)
 
-    # ---------------------------------------------------------
-    # OFFICE EMAIL AUTHENTICATION GATE (MAX 10 AUTHORIZED USERS)
-    # ---------------------------------------------------------
-    PUBLIC_DOMAINS = {
-        'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'icloud.com',
-        'yandex.com', 'mail.com', 'zoho.com', 'aol.com', 'gmx.com', 'protonmail.com', 'live.com'
-    }
-
-    if 'auth_email' not in st.session_state:
-        st.session_state['auth_email'] = None
-
-    if 'authorized_office_emails' not in st.session_state:
-        st.session_state['authorized_office_emails'] = []
-
-    # Authentication Lock Screen
-    if st.session_state['auth_email'] is None:
-        st.markdown("---")
-        st.markdown("### 🔒 Office Domain Access Authentication")
-        st.markdown("Please verify your official corporate office email address to access the Executive MPR Governance Dashboard.")
-
-        c_auth1, c_auth2 = st.columns([7, 5])
-        with c_auth1:
-            input_email = st.text_input(
-                "🏢 Enter your Official Office Email Address (.co.in domain):",
-                placeholder="e.g. alex.smith@chargezone.co.in",
-                key="office_email_input"
-            )
-            login_btn = st.button("🔐 Verify & Access Dashboard", type="primary")
-
-            if login_btn and input_email:
-                clean_email = input_email.strip().lower()
-                if '@' not in clean_email or '.' not in clean_email.split('@')[-1]:
-                    st.error("❌ **Invalid Email Format**: Please enter a complete email address (e.g. user@domain.co.in).")
-                elif not clean_email.endswith('.co.in'):
-                    st.error("❌ **Access Restricted**: Only official corporate email addresses ending with **`.co.in`** (e.g. `user@chargezone.co.in`, `user@domain.co.in`) are allowed.")
-                elif clean_email.split('@')[-1] in PUBLIC_DOMAINS:
-                    st.error(f"❌ **Public Email Restricted**: Public email providers are restricted. Please use your official corporate `.co.in` email address.")
-                else:
-                    # Check 10 User Limit
-                    if clean_email in st.session_state['authorized_office_emails']:
-                        st.session_state['auth_email'] = clean_email
-                        st.success(f"✓ Access Granted! Welcome back, `{clean_email}`.")
-                        st.rerun()
-                    elif len(st.session_state['authorized_office_emails']) < 10:
-                        st.session_state['authorized_office_emails'].append(clean_email)
-                        st.session_state['auth_email'] = clean_email
-                        st.success(f"✓ Account Registered ({len(st.session_state['authorized_office_emails'])}/10 slots used). Welcome, `{clean_email}`!")
-                        st.rerun()
-                    else:
-                        st.error("⛔ **Access Denied**: Maximum limit of **10 authorized `.co.in` office email users** has been reached. Please contact your administrator.")
-
-        with c_auth2:
-            st.info(f"""
-            #### 🛡️ Access Policy & Governance
-            - **Domain Restriction**: Strictly restricted to Official **`.co.in`** Corporate Email Domains (e.g. `@chargezone.co.in`, `@domain.co.in`).
-            - **User Access Limit**: Strictly capped at **10 Authorized `.co.in` Person Accounts**.
-            - **Current Registered Users**: `{len(st.session_state['authorized_office_emails'])} / 10 Slots Used`.
-            """)
-        return
-
-    # Sidebar Profile & Control Panel
+    # Sidebar Control Panel
     st.sidebar.markdown("### ⚙️ Control Panel")
-    st.sidebar.markdown("---")
-
-    st.sidebar.markdown("#### 🔒 Authenticated Session")
-    st.sidebar.info(f"👤 **User**: `{st.session_state['auth_email']}`\n\n🏢 **Status**: Corporate Office User ({len(st.session_state['authorized_office_emails'])}/10 Slots Used)")
-    if st.sidebar.button("🚪 Logout"):
-        st.session_state['auth_email'] = None
-        st.rerun()
     st.sidebar.markdown("---")
 
     MAX_FILE_SIZE_MB = 20
@@ -959,10 +885,10 @@ def run_streamlit_app():
     st.sidebar.success(file_status_text)
     st.sidebar.markdown("---")
 
-    # Processing Workbook with Caching
+    # Processing Workbook & Dataframes with Caching
     with st.spinner("Processing Operational Data Engine..."):
         try:
-            excel_bytes, raw_issue_df, raw_pm_df = generate_workbook_cached(issue_input, pm_input)
+            raw_issue_df, raw_pm_df = get_dataframes_cached(issue_input, pm_input)
         except Exception as e:
             st.error(f"⚠️ **Processing Error**: {e}")
             st.exception(e)
@@ -1008,7 +934,7 @@ def run_streamlit_app():
 
     st.sidebar.download_button(
         label="⚡ Download MPR Excel Report",
-        data=excel_bytes,
+        data=generate_workbook_cached(issue_input, pm_input),
         file_name=out_filename,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
@@ -1029,8 +955,8 @@ def run_streamlit_app():
         st.markdown('<div class="section-header">📊 Operational Issue & SLA Analytics Performance</div>', unsafe_allow_html=True)
 
         total_issues = len(filtered_issue_df)
-        within_tat = len(filtered_issue_df[filtered_issue_df['TAT Compliance'].astype(str).str.upper() == 'YES']) if 'TAT Compliance' in filtered_issue_df.columns else 0
-        without_tat = len(filtered_issue_df[filtered_issue_df['TAT Compliance'].astype(str).str.upper() == 'NO']) if 'TAT Compliance' in filtered_issue_df.columns else 0
+        within_tat = int(filtered_issue_df['Is_TAT_Compliant'].sum()) if 'Is_TAT_Compliant' in filtered_issue_df.columns else 0
+        without_tat = int(filtered_issue_df['Is_TAT_Breached'].sum()) if 'Is_TAT_Breached' in filtered_issue_df.columns else 0
         tat_eff = (within_tat / total_issues * 100) if total_issues > 0 else 0.0
 
         # High-Impact KPI Row
@@ -1074,17 +1000,17 @@ def run_streamlit_app():
         st.markdown('<div class="section-header">1. ZME Performance & TAT Efficiency Breakdown</div>', unsafe_allow_html=True)
         col_zme_c, col_zme_t = st.columns([6, 6])
 
-        if 'ZME' in filtered_issue_df.columns and 'TAT Compliance' in filtered_issue_df.columns:
+        if 'ZME' in filtered_issue_df.columns and 'Is_TAT_Compliant' in filtered_issue_df.columns:
             zme_df = filtered_issue_df.groupby('ZME').agg(
                 Total_Issues=('Status', 'count'),
-                Within_TAT=('TAT Compliance', lambda s: (s.astype(str).str.upper() == 'YES').sum()),
-                Without_TAT=('TAT Compliance', lambda s: (s.astype(str).str.upper() == 'NO').sum())
+                Within_TAT=('Is_TAT_Compliant', 'sum'),
+                Without_TAT=('Is_TAT_Breached', 'sum')
             ).reset_index()
             zme_df['TAT Efficiency %'] = (zme_df['Within_TAT'] / zme_df['Total_Issues'] * 100).round(1)
             zme_df = zme_df.rename(columns={'ZME': 'ZME Name'}).sort_values(by='Total_Issues', ascending=False)
 
             with col_zme_c:
-                plot_vertical_bar(zme_df, x_col='ZME Name', y_col='Total_Issues', title="Total Issues Logged by ZME", color_hex="#DC2626")
+                plot_vertical_bar(zme_df, x_col='ZME Name', y_col='Total_Issues', title="Total Issues Logged by ZME", color_hex="#2563EB")
 
             with col_zme_t:
                 st.write("##### 📊 ZME SLA Data Table")
@@ -1110,17 +1036,17 @@ def run_streamlit_app():
                 labels=['Within TAT (Compliant)', 'Without TAT (Breached)'],
                 values=[within_tat, without_tat],
                 title="Overall SLA Compliance Share",
-                colors=['#10b981', '#DC2626'],
+                colors=['#10B981', '#EF4444'],
                 hole=0.45
             )
 
         with col_zone_chart:
             st.markdown('<div class="section-header">🏢 3. Zone CM Efficiency (Grouped Chart & Table)</div>', unsafe_allow_html=True)
-            if 'Zone' in filtered_issue_df.columns and 'TAT Compliance' in filtered_issue_df.columns:
+            if 'Zone' in filtered_issue_df.columns and 'Is_TAT_Compliant' in filtered_issue_df.columns:
                 zone_df = filtered_issue_df.groupby('Zone').agg(
                     Total_Issues=('Status', 'count'),
-                    Within_TAT=('TAT Compliance', lambda s: (s.astype(str).str.upper() == 'YES').sum()),
-                    Without_TAT=('TAT Compliance', lambda s: (s.astype(str).str.upper() == 'NO').sum())
+                    Within_TAT=('Is_TAT_Compliant', 'sum'),
+                    Without_TAT=('Is_TAT_Breached', 'sum')
                 ).reset_index()
                 zone_df['CM Efficiency (Within TAT) %'] = (zone_df['Within_TAT'] / zone_df['Total_Issues'] * 100).round(1)
                 zone_df['CM Efficiency (Without TAT) %'] = (zone_df['Without_TAT'] / zone_df['Total_Issues'] * 100).round(1)
@@ -1131,7 +1057,7 @@ def run_streamlit_app():
                     x_col='Zone',
                     y_cols=['Within_TAT', 'Without_TAT'],
                     title="Work Orders Within vs Without TAT by Zone",
-                    colors=['#10b981', '#DC2626']
+                    colors=['#10B981', '#EF4444']
                 )
 
                 st.dataframe(
@@ -1153,7 +1079,7 @@ def run_streamlit_app():
             if 'Status' in filtered_issue_df.columns:
                 status_counts = filtered_issue_df['Status'].value_counts().reset_index()
                 status_counts.columns = ['Status', 'Count']
-                plot_vertical_bar(status_counts, x_col='Status', y_col='Count', title="Status Pipeline", color_hex="#475569")
+                plot_vertical_bar(status_counts, x_col='Status', y_col='Count', title="Status Pipeline", color_hex="#8B5CF6")
                 st.dataframe(status_counts, use_container_width=True)
 
         with c_sev:
@@ -1165,7 +1091,7 @@ def run_streamlit_app():
                     labels=sev_counts['Severity'].tolist(),
                     values=sev_counts['Count'].tolist(),
                     title="Severity Share",
-                    colors=['#DC2626', '#f59e0b', '#475569', '#10b981'],
+                    colors=['#EF4444', '#F59E0B', '#3B82F6', '#10B981'],
                     hole=0.4
                 )
                 st.dataframe(sev_counts, use_container_width=True)
@@ -1179,7 +1105,7 @@ def run_streamlit_app():
                     labels=cust_counts['Segment'].tolist(),
                     values=cust_counts['Count'].tolist(),
                     title="Segment Share",
-                    colors=['#475569', '#10b981'],
+                    colors=['#2563EB', '#10B981'],
                     hole=0.4
                 )
                 st.dataframe(cust_counts, use_container_width=True)
@@ -1202,7 +1128,7 @@ def run_streamlit_app():
                 col_rep_chart, col_rep_tbl = st.columns([6, 6])
                 with col_rep_chart:
                     repeats['Station_Fault'] = repeats['Station ID'].astype(str) + " - " + repeats['Issue Sub-Type'].astype(str)
-                    plot_vertical_bar(repeats.head(10), x_col='Station_Fault', y_col='Occurrences', title="Top Repetitive Fault Patterns", color_hex="#991B1B")
+                    plot_vertical_bar(repeats.head(10), x_col='Station_Fault', y_col='Occurrences', title="Top Repetitive Fault Patterns", color_hex="#DC2626")
                 with col_rep_tbl:
                     st.write("##### Repetitive Station Faults Table")
                     st.dataframe(
@@ -1222,17 +1148,15 @@ def run_streamlit_app():
         pm_df = raw_pm_df.copy()
 
         total_pm_planning = len(pm_df)
-        pm_done = len(pm_df[pm_df['PM Status'].astype(str).str.upper() == 'YES']) if 'PM Status' in pm_df.columns else 0
-        pm_pending = len(pm_df[pm_df['PM Status'].astype(str).str.upper() == 'NO']) if 'PM Status' in pm_df.columns else 0
+        pm_done = int(pm_df['Is_PM_Done'].sum()) if 'Is_PM_Done' in pm_df.columns else 0
+        pm_pending = int(pm_df['Is_PM_Pending'].sum()) if 'Is_PM_Pending' in pm_df.columns else 0
         
         if 'Advance PM Done' in pm_df.columns:
-            advance_done = len(pm_df[pm_df['Advance PM Done'].astype(str).str.upper() == 'YES'])
+            advance_done = int((pm_df['Advance PM Done'].astype(str).str.upper() == 'YES').sum())
         elif 'Actual Completion Date Parsed' in pm_df.columns and 'Due Date Parsed' in pm_df.columns:
-            advance_done = len(pm_df[
-                (pm_df['Actual Completion Date Parsed'].notna()) &
-                (pm_df['Due Date Parsed'].notna()) &
-                (pm_df['Actual Completion Date Parsed'] < pm_df['Due Date Parsed'])
-            ])
+            advance_done = int(((pm_df['Actual Completion Date Parsed'].notna()) &
+                                (pm_df['Due Date Parsed'].notna()) &
+                                (pm_df['Actual Completion Date Parsed'] < pm_df['Due Date Parsed'])).sum())
         else:
             advance_done = 0
 
@@ -1295,14 +1219,14 @@ def run_streamlit_app():
                 labels=['PM Done (Completed)', 'PM Pending (Scheduled)', 'Advance PM Done'],
                 values=[pm_done, pm_pending, advance_done],
                 title="PM Execution Distribution Share",
-                colors=['#10b981', '#DC2626', '#991B1B'],
+                colors=['#16A34A', '#DC2626', '#991B1B'],
                 hole=0.45
             )
 
         with col_pm_bar:
             st.markdown('<div class="section-header">📊 2. PM Planning vs Completion by ZME (Grouped Chart)</div>', unsafe_allow_html=True)
 
-            if 'ZME' in pm_df.columns and 'PM Status' in pm_df.columns:
+            if 'ZME' in pm_df.columns:
                 group_keys = ['ZME']
                 if 'Zone' in pm_df.columns:
                     group_keys.append('Zone')
@@ -1315,13 +1239,13 @@ def run_streamlit_app():
                     chargers_cnt = len(group['Charger ID'].dropna().unique()) if 'Charger ID' in group.columns else len(group)
                     stations_cnt = len(group['Station ID'].dropna().unique()) if 'Station ID' in group.columns else len(group)
                     planning_cnt = len(group)
-                    done_cnt = (group['PM Status'].astype(str).str.upper() == 'YES').sum()
-                    pending_cnt = (group['PM Status'].astype(str).str.upper() == 'NO').sum()
+                    done_cnt = int(group['Is_PM_Done'].sum()) if 'Is_PM_Done' in group.columns else 0
+                    pending_cnt = int(group['Is_PM_Pending'].sum()) if 'Is_PM_Pending' in group.columns else 0
                     
                     if 'Advance PM Done' in group.columns:
-                        adv_cnt = (group['Advance PM Done'].astype(str).str.upper() == 'YES').sum()
+                        adv_cnt = int((group['Advance PM Done'].astype(str).str.upper() == 'YES').sum())
                     elif 'Actual Completion Date Parsed' in group.columns and 'Due Date Parsed' in group.columns:
-                        adv_cnt = ((group['Actual Completion Date Parsed'].notna()) & (group['Due Date Parsed'].notna()) & (group['Actual Completion Date Parsed'] < group['Due Date Parsed'])).sum()
+                        adv_cnt = int(((group['Actual Completion Date Parsed'].notna()) & (group['Due Date Parsed'].notna()) & (group['Actual Completion Date Parsed'] < group['Due Date Parsed'])).sum())
                     else:
                         adv_cnt = 0
 
@@ -1346,7 +1270,7 @@ def run_streamlit_app():
                     x_col='ZME Name',
                     y_cols=['PM Planning', 'PM Done', 'PM Pending'],
                     title="Scheduled vs Completed PM Work Orders by ZME",
-                    colors=['#991B1B', '#10b981', '#DC2626']
+                    colors=['#991B1B', '#16A34A', '#DC2626']
                 )
 
         st.markdown("---")
@@ -1355,7 +1279,7 @@ def run_streamlit_app():
         st.markdown('<div class="section-header">⚙️ 3. Asset Infrastructure & Detailed PM Summary Table</div>', unsafe_allow_html=True)
         col_density_c, col_density_t = st.columns([6, 6])
 
-        if 'ZME' in pm_df.columns and 'PM Status' in pm_df.columns:
+        if 'ZME' in pm_df.columns:
             with col_density_c:
                 plot_grouped_bar(
                     df=pm_summary_df,
@@ -1387,12 +1311,13 @@ def run_streamlit_app():
     with tab_raw:
         st.markdown('<div class="section-header">🔍 Master Data Governance</div>', unsafe_allow_html=True)
         data_choice = st.radio("Select Sheet:", ["Issue Tracker Master Data", "PM Tracker Master Data"], horizontal=True)
+        exclude_cols = {'Issue Date Parsed', 'Due Date Parsed', 'Actual Completion Date Parsed', 'Is_TAT_Compliant', 'Is_TAT_Breached', 'Is_PM_Done', 'Is_PM_Pending'}
 
         if data_choice == "Issue Tracker Master Data":
-            df_disp = ensure_unique_columns(raw_issue_df.drop(columns=[c for c in ['Issue Date Parsed', 'Due Date Parsed', 'Actual Completion Date Parsed'] if c in raw_issue_df.columns]))
+            df_disp = ensure_unique_columns(raw_issue_df.drop(columns=[c for c in exclude_cols if c in raw_issue_df.columns]))
             st.dataframe(df_disp, use_container_width=True)
         else:
-            df_disp = ensure_unique_columns(raw_pm_df.drop(columns=[c for c in ['Issue Date Parsed', 'Due Date Parsed', 'Actual Completion Date Parsed'] if c in raw_pm_df.columns]))
+            df_disp = ensure_unique_columns(raw_pm_df.drop(columns=[c for c in exclude_cols if c in raw_pm_df.columns]))
             st.dataframe(df_disp, use_container_width=True)
 
 
@@ -1402,7 +1327,7 @@ if __name__ == '__main__':
         if len(sys.argv) == 2 or (len(sys.argv) >= 3 and sys.argv[2].endswith('.xlsx') and not sys.argv[1].endswith('.xlsx')):
             src_path = sys.argv[1]
             out_path = sys.argv[2] if len(sys.argv) > 2 else f"MPR_Report_{datetime.now():%Y-%m}.xlsx"
-            wb, _, _ = generate_workbook_cached(src_path)
+            wb = generate_workbook_cached(src_path)
             with open(out_path, 'wb') as f:
                 f.write(wb)
             print(f'Written: {out_path}')
@@ -1410,7 +1335,7 @@ if __name__ == '__main__':
             issue_path = sys.argv[1]
             pm_path = sys.argv[2]
             out_path = sys.argv[3] if len(sys.argv) > 3 else f"MPR_Report_{datetime.now():%Y-%m}.xlsx"
-            wb, _, _ = generate_workbook_cached(issue_path, pm_path)
+            wb = generate_workbook_cached(issue_path, pm_path)
             with open(out_path, 'wb') as f:
                 f.write(wb)
             print(f'Written: {out_path}')
