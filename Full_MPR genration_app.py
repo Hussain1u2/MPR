@@ -21,6 +21,25 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(page_title='ChargeZone MPR Dashboard', layout='wide')
 
+BAD_VALUES = {'', '#REF!', '#N/A', '#VALUE!', '#NAME?', 'NONE'}
+
+
+def norm_header(h):
+    """Keeps only lowercase letters/digits -- so 'Sr No.', 'Sr No', 'Issue
+    Sub-Type', 'B2B/ B2C' and 'B2B/B2C' all normalize to the same key.
+    Tracker exports vary punctuation/spacing month to month."""
+    if h is None:
+        return ''
+    return ''.join(c for c in str(h).lower() if c.isalnum())
+
+
+def clean_value(v):
+    if v is None:
+        return None
+    if isinstance(v, str) and v.strip().upper() in BAD_VALUES:
+        return None
+    return v
+
 
 # ---------------------------------------------------------------- parsing --
 
@@ -33,29 +52,37 @@ def fiscal_year_quarter(dt):
 
 def parse_issue_tracker(wb):
     rows = list(wb['Issue Tracker'].iter_rows(values_only=True))
-    headers = [h.strip() if isinstance(h, str) else h for h in rows[0]]
-    idx = {h: i for i, h in enumerate(headers)}
+    idx = {norm_header(h): i for i, h in enumerate(rows[0]) if h}
+    required = ['issueid', 'issuedate', 'zone', 'status', 'severity', 'tatcompliance',
+                'issuetype', 'issuesubtype', 'stationid', 'b2bb2c']
+    missing = [r for r in required if r not in idx]
+    if missing:
+        raise ValueError(f"Issue Tracker is missing expected column(s): {missing}. "
+                          f"Found headers: {list(rows[0])[:15]}...")
+    zme_col = idx.get('zme', idx.get('managername'))
+
     records = []
     for r in rows[1:]:
-        if r[idx['Sr No.']] is None and r[idx['Issue Id']] is None:
+        if r[idx['issueid']] is None:
             continue
-        issue_date = r[idx['Issue Date']]
+        issue_date = r[idx['issuedate']]
         if not isinstance(issue_date, datetime):
             continue
         fy, qnum, qlabel, mlabel = fiscal_year_quarter(issue_date)
         records.append({
-            'zme': r[idx['Manager Name']], 'zone': r[idx['Zone']], 'status': r[idx['Status']],
-            'severity': r[idx['Severity']], 'tatCompliance': r[idx['TAT Compliance']],
-            'issueType': r[idx['Issue Type']], 'issueSubType': r[idx['Issue Sub-Type']],
-            'stationId': r[idx['Station ID']], 'segment': r[idx['B2B/ B2C']],
+            'zme': clean_value(r[zme_col]) if zme_col is not None else None,
+            'zone': r[idx['zone']], 'status': r[idx['status']], 'severity': r[idx['severity']],
+            'tatCompliance': r[idx['tatcompliance']], 'issueType': r[idx['issuetype']],
+            'issueSubType': r[idx['issuesubtype']], 'stationId': r[idx['stationid']],
+            'segment': r[idx['b2bb2c']],
             'fy': fy, 'quarter': qnum, 'quarterLabel': qlabel, 'month': mlabel,
         })
     return pd.DataFrame(records)
 
 
-def classify_pm_columns(row5):
+def classify_pm_columns(header_row):
     blocks, pending, current = [], [], None
-    for i, h in enumerate(row5):
+    for i, h in enumerate(header_row):
         text = str(h) if h else ''
         if 'Quarterly Schedule' in text or 'Repeatitive PM' in text or text in ('', 'Blank'):
             continue
@@ -69,32 +96,58 @@ def classify_pm_columns(row5):
             if current is not None:
                 current['completionCol'] = i
             continue
-        if 'Status' in text:
+        if 'Status' in text and 'Station' not in text:
             current = {'statusCol': i, 'completionCol': None}
             pending.append(current)
     return blocks
 
 
+def find_pm_header_row(rows):
+    """The PM Tracker's preamble depth (title/quarter rows above the actual
+    field headers) varies between exports, so locate the header row by
+    content -- the row whose 2nd column reads 'OCPP ID' -- rather than a
+    fixed row index."""
+    for i, r in enumerate(rows):
+        if len(r) > 1 and norm_header(r[1]) == 'ocppid':
+            return i
+    raise ValueError('Could not locate the PM Tracker header row (no "OCPP ID" column found).')
+
+
 def parse_pm_tracker(wb):
     rows = list(wb['PM Tracker'].iter_rows(values_only=True))
-    row4, row5 = rows[3], rows[4]
-    station_cols = list(range(0, 13))
-    station_fields = [row5[i] for i in station_cols]
-    blocks = classify_pm_columns(row5)
+    header_row_idx = find_pm_header_row(rows)
+    due_date_row = rows[header_row_idx - 1] if header_row_idx > 0 else [None] * len(rows[header_row_idx])
+    header_row = rows[header_row_idx]
+
+    station_end = next((i for i, h in enumerate(header_row) if 'Quarterly Schedule' in str(h or '')),
+                        len(header_row))
+    station_cols = list(range(0, station_end))
+    station_fields = [norm_header(header_row[i]) for i in station_cols]
+    lead_zme_pos = station_fields.index('leadzme') if 'leadzme' in station_fields else None
+    zme_pos = station_fields.index('zme') if 'zme' in station_fields else None
+    zone_pos = station_fields.index('zone') if 'zone' in station_fields else None
+    ocpp_pos = station_fields.index('ocppid') if 'ocppid' in station_fields else None
+    station_id_pos = station_fields.index('stationid') if 'stationid' in station_fields else None
+
+    blocks = classify_pm_columns(header_row)
     records = []
-    for r in rows[5:]:
-        if r[0] is None and r[10] is None:
+    for r in rows[header_row_idx + 1:]:
+        if ocpp_pos is None or r[station_cols[ocpp_pos]] is None:
             continue
-        station = {name: r[i] for name, i in zip(station_fields, station_cols)}
+        zme = clean_value(r[station_cols[lead_zme_pos]]) if lead_zme_pos is not None else None
+        if zme is None and zme_pos is not None:
+            zme = clean_value(r[station_cols[zme_pos]])
+        zone = r[station_cols[zone_pos]] if zone_pos is not None else None
+        station_id = r[station_cols[station_id_pos]] if station_id_pos is not None else None
+
         for b in blocks:
-            due_date = row4[b['statusCol']]
+            due_date = due_date_row[b['statusCol']]
             if not isinstance(due_date, datetime):
                 continue
             fy, qnum, qlabel, mlabel = fiscal_year_quarter(due_date)
             completion = r[b['completionCol']] if b['completionCol'] is not None else None
             records.append({
-                'zme': station.get('ZME'), 'zone': station.get('Zone'),
-                'ocppId': station.get('OCPP ID'), 'stationId': station.get('Station ID'),
+                'zme': zme, 'zone': zone, 'stationId': station_id,
                 'status': r[b['statusCol']], 'dueDate': due_date,
                 'completionDate': completion if isinstance(completion, datetime) else None,
                 'fy': fy, 'quarter': qnum, 'quarterLabel': qlabel, 'month': mlabel,
