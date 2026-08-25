@@ -1,5 +1,6 @@
 from datetime import datetime
 from io import BytesIO
+import re
 
 import openpyxl
 import pandas as pd
@@ -186,36 +187,130 @@ def parse_issue_tracker(wb):
     return df
 
 
+def _infer_week_year(rows, header_idx, header_row, status_col):
+    """Infer the calendar year used by a schedule-week value."""
+    # Prefer explicit 4-digit years in nearby header text.
+    nearby_text = " ".join(
+        str(x or "") for x in header_row[max(0, status_col - 3): min(len(header_row), status_col + 4)]
+    )
+    years = re.findall(r"\b(20\d{2})\b", nearby_text)
+    if years:
+        return int(years[0])
+
+    # Prefer a real date from the schedule/due-date row.
+    if header_idx > 0:
+        for v in rows[header_idx - 1]:
+            if isinstance(v, (datetime, pd.Timestamp)) and not pd.isna(v):
+                return int(v.year)
+
+    # Search the few rows above the header for a real date/year.
+    for rr in reversed(rows[max(0, header_idx - 4):header_idx]):
+        for v in rr:
+            if isinstance(v, (datetime, pd.Timestamp)) and not pd.isna(v):
+                return int(v.year)
+            if isinstance(v, str):
+                m = re.search(r"\b(20\d{2})\b", v)
+                if m:
+                    return int(m.group(1))
+
+    return datetime.now().year
+
+
+def _schedule_week_to_date(value, year):
+    """Convert an Excel schedule week / date value into a real date."""
+    if isinstance(value, (datetime, pd.Timestamp)):
+        return pd.Timestamp(value).to_pydatetime()
+
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+
+    # Excel week values are commonly numeric, e.g. 14, 15, 16.
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        week = int(value)
+        if 1 <= week <= 53:
+            try:
+                return pd.Timestamp(datetime.fromisocalendar(year, week, 1)).to_pydatetime()
+            except ValueError:
+                return None
+
+    s = str(value).strip()
+    if not s:
+        return None
+
+    # Accept "W14", "Week 14", "WK-14", etc.
+    m = re.fullmatch(r"(?:W|WK|WEEK)\s*[-#:]?\s*(\d{1,2})", s, flags=re.I)
+    if m:
+        week = int(m.group(1))
+        if 1 <= week <= 53:
+            try:
+                return pd.Timestamp(datetime.fromisocalendar(year, week, 1)).to_pydatetime()
+            except ValueError:
+                return None
+
+    # Numeric text such as "14".
+    if re.fullmatch(r"\d{1,2}", s):
+        week = int(s)
+        if 1 <= week <= 53:
+            try:
+                return pd.Timestamp(datetime.fromisocalendar(year, week, 1)).to_pydatetime()
+            except ValueError:
+                return None
+
+    parsed = pd.to_datetime(s, errors="coerce", dayfirst=True)
+    if not pd.isna(parsed):
+        return pd.Timestamp(parsed).to_pydatetime()
+
+    return None
+
+
 def classify_pm_blocks(rows, header_idx):
-    due_date_row = rows[header_idx - 1] if header_idx > 0 else [None] * len(rows[header_idx])
+    schedule_row = rows[header_idx - 1] if header_idx > 0 else [None] * len(rows[header_idx])
     header_row = rows[header_idx]
 
-    blocks = []
-    current_block = None
+    status_cols = []
+    completion_cols = []
+    compliance_cols = []
 
     for i, h in enumerate(header_row):
-        text = str(h or '').strip().lower()
+        text = str(h or "").strip().lower()
+        if "actual completion date" in text or "completion date" in text:
+            completion_cols.append(i)
+        elif "quarterly" in text and "compliance" in text:
+            compliance_cols.append(i)
+        elif "status" in text and "station" not in text:
+            status_cols.append(i)
 
-        if any(x in text for x in ['quarterly schedule', 'repeatitive', 'compliance', 'inspection', 'first aid', 'hse', 'f.e.']):
-            continue
-        if 'actual completion date' in text or 'completion date' in text:
-            if current_block is not None:
-                current_block['completionCol'] = i
-            continue
-        if 'status' in text and 'station' not in text:
-            due_dt = due_date_row[i] if i < len(due_date_row) else None
-            if not isinstance(due_dt, (datetime, pd.Timestamp)):
-                due_dt = None
-            current_block = {
-                'statusCol': i,
-                'completionCol': None,
-                'headerText': str(h),
-                'dueDate': due_dt
-            }
-            blocks.append(current_block)
+    blocks = []
+    for idx, sc in enumerate(status_cols):
+        next_sc = status_cols[idx + 1] if idx + 1 < len(status_cols) else len(header_row)
+
+        # The completion/compliance columns belonging to this status block are
+        # normally between this status column and the next status column.
+        block_completion = [c for c in completion_cols if sc < c < next_sc]
+        block_compliance = [c for c in compliance_cols if sc < c < next_sc]
+
+        # Fallback to the nearest matching column if the workbook layout has
+        # one shared compliance/completion column.
+        if not block_completion and completion_cols:
+            block_completion = [min(completion_cols, key=lambda c: abs(c - sc))]
+        if not block_compliance and compliance_cols:
+            block_compliance = [min(compliance_cols, key=lambda c: abs(c - sc))]
+
+        schedule_value = schedule_row[sc] if sc < len(schedule_row) else None
+        week_year = _infer_week_year(rows, header_idx, header_row, sc)
+        due_dt = _schedule_week_to_date(schedule_value, week_year)
+
+        blocks.append({
+            "statusCol": sc,
+            "completionCol": block_completion[0] if block_completion else None,
+            "complianceCol": block_compliance[0] if block_compliance else None,
+            "headerText": str(header_row[sc]),
+            "scheduleValue": clean_val(schedule_value),
+            "scheduleWeekYear": week_year,
+            "dueDate": due_dt,
+        })
 
     return blocks
-
 
 def parse_pm_tracker(wb):
     sheet_name = select_sheet_name(wb.sheetnames, ['PM Tracker B2C- B2B', 'PM Tracker B2C-B2B', 'PM Tracker', 'PM Data'], 'pm')
@@ -283,11 +378,14 @@ def parse_pm_tracker(wb):
             raw_st = r[sc]
             st_clean = clean_val(raw_st)
             
-            due_date = due_date_row[sc] if sc < len(due_date_row) else None
-            if not isinstance(due_date, (datetime, pd.Timestamp)):
-                due_date = None
+            due_date = b.get('dueDate')
+            if due_date is None:
+                due_date = _schedule_week_to_date(
+                    due_date_row[sc] if sc < len(due_date_row) else None,
+                    b.get('scheduleWeekYear', datetime.now().year)
+                )
 
-            # No real due date for this column -> not a genuine scheduled
+            # No valid schedule week/date -> not a genuine scheduled
             # month, skip rather than mis-attributing it to a fabricated
             # date (that previously forced stray columns into Apr-2025).
             if due_date is None:
@@ -304,22 +402,26 @@ def parse_pm_tracker(wb):
             if not isinstance(completion, (datetime, pd.Timestamp)):
                 completion = None
 
-            # st_clean is already None for any BAD_VALUES token (including
-            # bare 'NA', which showed up as a literal status value in the
-            # source and was previously being counted as a real "pending"
-            # PM instance).
+            qc = b.get('complianceCol')
+            quarterly_compliance = r[qc] if qc is not None and qc < len(r) else None
+            quarterly_compliance = clean_val(quarterly_compliance)
+
+            # PM governance rules requested for the dashboard:
+            # 1. PM Planning = a valid schedule week/date exists.
+            # 2. PM Done = monthly Status == YES AND Actual Completion Date exists.
+            # 3. PM Pending = monthly Status == NO AND no Actual Completion Date
+            #    AND Quarterly Compliance == NO.
             st_str = str(st_clean or '').strip().upper()
-            has_status = st_clean is not None
+            qc_str = str(quarterly_compliance or '').strip().upper()
 
-            # Executive PM Governance Rules:
-            # 1. PM Done: Marked as Yes/Done/Completed OR actual completion date is present
-            is_done = (st_str in ['YES', 'DONE', 'COMPLETED', 'TRUE', '1']) or (completion is not None)
-
-            # 2. PM Planned: Work order scheduled for selected month (has recorded status or is completed)
-            is_planned = is_done or (st_clean is not None) or (st_str in ['NO', '0', 'FALSE', 'PENDING', 'OPEN', 'SCHED', 'SCHEDULED'])
-
-            # 3. PM Pending: Work order scheduled for selected month that is not completed
-            is_pending = is_planned and not is_done
+            is_planned = due_date is not None
+            is_done = is_planned and st_str == 'YES' and completion is not None
+            is_pending = (
+                is_planned
+                and st_str == 'NO'
+                and completion is None
+                and qc_str == 'NO'
+            )
 
             # 4. Advance PM Done: Completion date is earlier than schedule due date
             adv_done = False
@@ -358,8 +460,11 @@ def parse_pm_tracker(wb):
                 'segment': segment_val,
                 'stationStatus': stn_status_val,
                 'status': st_clean,
+                'scheduleWeek': b.get('scheduleValue'),
+                'scheduleWeekYear': b.get('scheduleWeekYear'),
                 'dueDate': due_date,
                 'completionDate': completion,
+                'quarterlyCompliance': quarterly_compliance,
                 'fy': fy, 'quarter': qnum, 'quarterLabel': qlabel, 'month': mlabel,
                 'Is_PM_Planned': is_planned,
                 'Is_PM_Done': is_done,
@@ -1178,6 +1283,11 @@ def main():
         # Dynamic KPI calculations for selected month(s)
         total_chargers = len(selected_pm['ocppId'].dropna()) if not selected_pm.empty else 0
         total_stations = selected_pm['stationId'].nunique() if not selected_pm.empty else 0
+        # PM KPI formulas:
+        # Planning = valid schedule week/date count
+        # Done = Status YES + Actual Completion Date present
+        # Pending = Status NO + no Actual Completion Date + Quarterly Compliance NO
+        # Efficiency = PM Done / PM Planning * 100
         total_pm_planning = int(selected_pm['Is_PM_Planned'].sum()) if not selected_pm.empty else 0
         pm_done = int(selected_pm['Is_PM_Done'].sum()) if not selected_pm.empty else 0
         pm_pending = int(selected_pm['Is_PM_Pending'].sum()) if not selected_pm.empty else 0
