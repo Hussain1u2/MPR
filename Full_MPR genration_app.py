@@ -1,3 +1,7 @@
+"""
+ChargeZone MPR & PM Governance Dashboard - Executive Red & White Theme
+Streamlit Application for Issue Tracker & PM Tracker Analytics.
+"""
 from datetime import datetime
 from io import BytesIO
 import re
@@ -133,8 +137,17 @@ def parse_issue_tracker(wb):
         
         if isinstance(issue_date, (datetime, pd.Timestamp)) and not pd.isna(issue_date):
             fy, qnum, qlabel, mlabel = fiscal_year_quarter(issue_date)
+            iso_year, iso_week, _ = issue_date.isocalendar()
+            start_dt = pd.Timestamp(datetime.fromisocalendar(iso_year, iso_week, 1)).to_pydatetime()
+            end_dt = pd.Timestamp(datetime.fromisocalendar(iso_year, iso_week, 7)).to_pydatetime()
+            week_range = f"W{iso_week:02d} ({start_dt.strftime('%d-%b-%Y')} to {end_dt.strftime('%d-%b-%Y')})"
+            schedule_week = f"W{iso_week:02d}"
         else:
             fy, qnum, qlabel, mlabel = 'Unscheduled FY', 0, 'Unscheduled Q', 'Unscheduled'
+            week_range = "Unscheduled"
+            schedule_week = "Unscheduled"
+            start_dt = None
+            end_dt = None
 
         status_raw = str(clean_val(r[col_status]) or 'Open').strip()
         # A blank TAT Compliance cell means "not yet determined" (e.g. the
@@ -158,6 +171,10 @@ def parse_issue_tracker(wb):
             'segment': clean_val(r[col_segment]) if col_segment is not None and col_segment < len(r) else 'B2C',
             'fy': fy, 'quarter': qnum, 'quarterLabel': qlabel, 'month': mlabel,
             'issueDate': issue_date,
+            'scheduleWeek': schedule_week,
+            'weekStartDate': start_dt,
+            'weekEndDate': end_dt,
+            'scheduleWeekRange': week_range,
         })
 
     df = pd.DataFrame(records)
@@ -188,8 +205,7 @@ def parse_issue_tracker(wb):
 
 
 def _infer_week_year(rows, header_idx, header_row, status_col):
-    """Infer the calendar year used by a schedule-week value."""
-    # Prefer explicit 4-digit years in nearby header text.
+    """Infer the calendar year associated with a status block."""
     nearby_text = " ".join(
         str(x or "") for x in header_row[max(0, status_col - 3): min(len(header_row), status_col + 4)]
     )
@@ -197,13 +213,11 @@ def _infer_week_year(rows, header_idx, header_row, status_col):
     if years:
         return int(years[0])
 
-    # Prefer a real date from the schedule/due-date row.
     if header_idx > 0:
         for v in rows[header_idx - 1]:
             if isinstance(v, (datetime, pd.Timestamp)) and not pd.isna(v):
                 return int(v.year)
 
-    # Search the few rows above the header for a real date/year.
     for rr in reversed(rows[max(0, header_idx - 4):header_idx]):
         for v in rr:
             if isinstance(v, (datetime, pd.Timestamp)) and not pd.isna(v):
@@ -216,51 +230,94 @@ def _infer_week_year(rows, header_idx, header_row, status_col):
     return datetime.now().year
 
 
-def _schedule_week_to_date(value, year):
-    """Convert an Excel schedule week / date value into a real date."""
-    if isinstance(value, (datetime, pd.Timestamp)):
-        return pd.Timestamp(value).to_pydatetime()
-
+def _schedule_week_to_range(value, year):
+    """Convert an Excel schedule week / date / serial number value into (start_date, end_date, range_str)."""
     if value is None or (isinstance(value, float) and pd.isna(value)):
-        return None
+        return None, None, 'Unscheduled'
 
-    # Excel week values are commonly numeric, e.g. 14, 15, 16.
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        week = int(value)
-        if 1 <= week <= 53:
+    single_dt = None
+    week_num = None
+
+    if isinstance(value, (datetime, pd.Timestamp)):
+        single_dt = pd.Timestamp(value).to_pydatetime()
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        num_val = float(value)
+        if 35000 <= num_val <= 70000:
             try:
-                return pd.Timestamp(datetime.fromisocalendar(year, week, 1)).to_pydatetime()
-            except ValueError:
-                return None
+                dt_conv = pd.to_datetime(num_val, unit='D', origin='1899-12-30')
+                if not pd.isna(dt_conv):
+                    single_dt = pd.Timestamp(dt_conv).to_pydatetime()
+            except Exception:
+                pass
+        
+        if single_dt is None:
+            w = int(num_val)
+            if 1 <= w <= 53:
+                week_num = w
+    else:
+        s = str(value).strip()
+        if not s or s.upper() in BAD_VALUES:
+            return None, None, 'Unscheduled'
 
-    s = str(value).strip()
-    if not s:
-        return None
+        m = re.search(r"(?:W|WK|WEEK)\s*[-#:]?\s*(\d{1,2})\b", s, flags=re.I)
+        if m:
+            w = int(m.group(1))
+            if 1 <= w <= 53:
+                week_num = w
+        elif s.isdigit() or re.fullmatch(r"\d{1,5}", s):
+            val_int = int(s)
+            if 1 <= val_int <= 53:
+                week_num = val_int
+            elif 35000 <= val_int <= 70000:
+                try:
+                    dt_conv = pd.to_datetime(val_int, unit='D', origin='1899-12-30')
+                    if not pd.isna(dt_conv):
+                        single_dt = pd.Timestamp(dt_conv).to_pydatetime()
+                except Exception:
+                    pass
+        
+        if single_dt is None and week_num is None:
+            if re.match(r"^\d{4}[-/]", s):
+                parsed_dt = pd.to_datetime(s, errors="coerce", dayfirst=False)
+            else:
+                parsed_dt = pd.to_datetime(s, errors="coerce", dayfirst=True)
 
-    # Accept "W14", "Week 14", "WK-14", etc.
-    m = re.fullmatch(r"(?:W|WK|WEEK)\s*[-#:]?\s*(\d{1,2})", s, flags=re.I)
-    if m:
-        week = int(m.group(1))
-        if 1 <= week <= 53:
-            try:
-                return pd.Timestamp(datetime.fromisocalendar(year, week, 1)).to_pydatetime()
-            except ValueError:
-                return None
+            if not pd.isna(parsed_dt) and parsed_dt.year >= 2000:
+                single_dt = pd.Timestamp(parsed_dt).to_pydatetime()
+            else:
+                m_standalone = re.search(r"\b([1-9]|[1-4][0-9]|5[0-3])\b", s)
+                if m_standalone:
+                    week_num = int(m_standalone.group(1))
 
-    # Numeric text such as "14".
-    if re.fullmatch(r"\d{1,2}", s):
-        week = int(s)
-        if 1 <= week <= 53:
-            try:
-                return pd.Timestamp(datetime.fromisocalendar(year, week, 1)).to_pydatetime()
-            except ValueError:
-                return None
+    if single_dt is not None:
+        try:
+            iso_year, iso_week, _ = single_dt.isocalendar()
+            start_dt = pd.Timestamp(datetime.fromisocalendar(iso_year, iso_week, 1)).to_pydatetime()
+            end_dt = pd.Timestamp(datetime.fromisocalendar(iso_year, iso_week, 7)).to_pydatetime()
+            range_str = f"W{iso_week:02d} ({start_dt.strftime('%d-%b-%Y')} to {end_dt.strftime('%d-%b-%Y')})"
+            return start_dt, end_dt, range_str
+        except Exception:
+            start_dt = single_dt
+            end_dt = single_dt
+            range_str = start_dt.strftime('%d-%b-%Y')
+            return start_dt, end_dt, range_str
 
-    parsed = pd.to_datetime(s, errors="coerce", dayfirst=True)
-    if not pd.isna(parsed):
-        return pd.Timestamp(parsed).to_pydatetime()
+    if week_num is not None:
+        try:
+            target_year = int(year) if year and 2000 <= int(year) <= 2100 else datetime.now().year
+            start_dt = pd.Timestamp(datetime.fromisocalendar(target_year, week_num, 1)).to_pydatetime()
+            end_dt = pd.Timestamp(datetime.fromisocalendar(target_year, week_num, 7)).to_pydatetime()
+            range_str = f"W{week_num:02d} ({start_dt.strftime('%d-%b-%Y')} to {end_dt.strftime('%d-%b-%Y')})"
+            return start_dt, end_dt, range_str
+        except ValueError:
+            return None, None, 'Unscheduled'
 
-    return None
+    return None, None, 'Unscheduled'
+
+
+def _schedule_week_to_date(value, year):
+    start_dt, _, _ = _schedule_week_to_range(value, year)
+    return start_dt
 
 
 def classify_pm_blocks(rows, header_idx):
@@ -270,6 +327,7 @@ def classify_pm_blocks(rows, header_idx):
     status_cols = []
     completion_cols = []
     compliance_cols = []
+    q_sched_cols = {}
 
     for i, h in enumerate(header_row):
         text = str(h or "").strip().lower()
@@ -277,40 +335,52 @@ def classify_pm_blocks(rows, header_idx):
             completion_cols.append(i)
         elif "quarterly" in text and "compliance" in text:
             compliance_cols.append(i)
-        elif "status" in text and "station" not in text:
+        elif "quarterly schedule" in text or "quarter schedule" in text or "pm schedule" in text:
+            q_sched_cols[i] = str(h).strip()
+        elif "status" in text and "station" not in text and "inspection" not in text:
             status_cols.append(i)
 
     blocks = []
     for idx, sc in enumerate(status_cols):
         next_sc = status_cols[idx + 1] if idx + 1 < len(status_cols) else len(header_row)
 
-        # The completion/compliance columns belonging to this status block are
-        # normally between this status column and the next status column.
         block_completion = [c for c in completion_cols if sc < c < next_sc]
         block_compliance = [c for c in compliance_cols if sc < c < next_sc]
 
-        # Fallback to the nearest matching column if the workbook layout has
-        # one shared compliance/completion column.
         if not block_completion and completion_cols:
             block_completion = [min(completion_cols, key=lambda c: abs(c - sc))]
         if not block_compliance and compliance_cols:
             block_compliance = [min(compliance_cols, key=lambda c: abs(c - sc))]
 
+        prec_q = [qc for qc in q_sched_cols if qc <= sc]
+        q_col = max(prec_q) if prec_q else None
+
         schedule_value = schedule_row[sc] if sc < len(schedule_row) else None
+        if clean_val(schedule_value) is None and header_idx > 1:
+            prev_row2 = rows[header_idx - 2]
+            schedule_value = prev_row2[sc] if sc < len(prev_row2) else None
+        if clean_val(schedule_value) is None:
+            schedule_value = header_row[sc] if sc < len(header_row) else None
+
         week_year = _infer_week_year(rows, header_idx, header_row, sc)
-        due_dt = _schedule_week_to_date(schedule_value, week_year)
+        start_dt, end_dt, range_str = _schedule_week_to_range(schedule_value, week_year)
 
         blocks.append({
             "statusCol": sc,
             "completionCol": block_completion[0] if block_completion else None,
             "complianceCol": block_compliance[0] if block_compliance else None,
+            "qSchedCol": q_col,
             "headerText": str(header_row[sc]),
             "scheduleValue": clean_val(schedule_value),
             "scheduleWeekYear": week_year,
-            "dueDate": due_dt,
+            "dueDate": start_dt,
+            "weekStartDate": start_dt,
+            "weekEndDate": end_dt,
+            "scheduleWeekRange": range_str,
         })
 
     return blocks
+
 
 def parse_pm_tracker(wb):
     sheet_name = select_sheet_name(wb.sheetnames, ['PM Tracker B2C- B2B', 'PM Tracker B2C-B2B', 'PM Tracker', 'PM Data'], 'pm')
@@ -379,15 +449,16 @@ def parse_pm_tracker(wb):
             st_clean = clean_val(raw_st)
             
             due_date = b.get('dueDate')
-            if due_date is None:
-                due_date = _schedule_week_to_date(
-                    due_date_row[sc] if sc < len(due_date_row) else None,
-                    b.get('scheduleWeekYear', datetime.now().year)
-                )
+            week_start = b.get('weekStartDate')
+            week_end = b.get('weekEndDate')
+            week_range = b.get('scheduleWeekRange')
 
-            # No valid schedule week/date -> not a genuine scheduled
-            # month, skip rather than mis-attributing it to a fabricated
-            # date (that previously forced stray columns into Apr-2025).
+            if due_date is None:
+                due_raw = due_date_row[sc] if sc < len(due_date_row) else None
+                year_val = b.get('scheduleWeekYear', datetime.now().year)
+                week_start, week_end, week_range = _schedule_week_to_range(due_raw, year_val)
+                due_date = week_start
+
             if due_date is None:
                 continue
 
@@ -406,38 +477,54 @@ def parse_pm_tracker(wb):
             quarterly_compliance = r[qc] if qc is not None and qc < len(r) else None
             quarterly_compliance = clean_val(quarterly_compliance)
 
-            # PM governance rules requested for the dashboard:
-            # 1. PM Planning = a valid schedule week/date exists.
-            # 2. PM Done = monthly Status == YES AND Actual Completion Date exists.
-            # 3. PM Pending = monthly Status == NO AND no Actual Completion Date
-            #    AND Quarterly Compliance == NO.
             st_str = str(st_clean or '').strip().upper()
             qc_str = str(quarterly_compliance or '').strip().upper()
 
-            is_planned = due_date is not None
-            is_done = is_planned and st_str == 'YES' and completion is not None
-            is_pending = (
-                is_planned
-                and st_str == 'NO'
-                and completion is None
-                and qc_str == 'NO'
-            )
+            # Executive PM Governance Rules:
+            # 1. PM Planning = Derived from charger's Quarterly Schedule week for this block's month/year (or active status/completion date).
+            # 2. PM Done = Actual Completion Date is present (completion is not None or status == YES).
+            # 3. PM Pending = PM Planning - PM Done (Is_PM_Planned and not Is_PM_Done).
+            # 4. PM Efficiency % = PM Done / PM Planning * 100.
+            q_col = b.get('qSchedCol')
+            q_sched_val = clean_val(r[q_col]) if q_col is not None and q_col < len(r) else None
 
-            # 4. Advance PM Done: Completion date is earlier than schedule due date
+            is_planned = False
+            if q_sched_val:
+                year_val = b.get('scheduleWeekYear', due_date.year if due_date else datetime.now().year)
+                q_start_dt, _, _ = _schedule_week_to_range(q_sched_val, year_val)
+                if q_start_dt and due_date and q_start_dt.month == due_date.month and q_start_dt.year == due_date.year:
+                    is_planned = True
+
+            has_pm_entry = (st_clean is not None) or (completion is not None) or (quarterly_compliance is not None)
+            if st_str in ['UNSCHEDULED', 'NOT PLANNED', 'NO PLAN', 'OFF', 'CANCELLED', 'N/A', 'NONE']:
+                if completion is None:
+                    has_pm_entry = False
+
+            if not is_planned and (q_col is None or q_sched_val is None):
+                if has_pm_entry:
+                    is_planned = True
+
+            is_done = (completion is not None or st_str in ['YES', 'DONE', 'COMPLETED', 'TRUE', '1', 'PM DONE', 'EXECUTED', 'PASS', 'PASSED'])
+            if is_done:
+                is_planned = True
+
+            is_pending = is_planned and not is_done
+
+            # 4. Advance PM Done: Actual completion date is before scheduled week start date
             adv_done = False
             if is_done and completion is not None and due_date is not None:
-                if completion < due_date or (completion.year == due_date.year and completion.month < due_date.month):
+                if completion < due_date:
                     adv_done = True
 
             # PM Compliance Status Formula
             if is_planned:
                 if is_done:
                     if completion is not None and due_date is not None:
-                        if completion < due_date or (completion.year == due_date.year and completion.month < due_date.month):
+                        if completion < due_date:
                             pm_compliance = '🟡 Advance PM Done (Before Schedule)'
-                        elif completion.month == due_date.month and completion.year == due_date.year:
+                        elif week_end is not None and completion <= week_end:
                             pm_compliance = '🟢 On-Time (As Scheduled)'
-                        elif completion > due_date:
+                        elif week_end is not None and completion > week_end:
                             pm_compliance = '🟠 Completed Delayed'
                         else:
                             pm_compliance = '🟢 On-Time (As Scheduled)'
@@ -462,6 +549,9 @@ def parse_pm_tracker(wb):
                 'status': st_clean,
                 'scheduleWeek': b.get('scheduleValue'),
                 'scheduleWeekYear': b.get('scheduleWeekYear'),
+                'weekStartDate': week_start,
+                'weekEndDate': week_end,
+                'scheduleWeekRange': week_range,
                 'dueDate': due_date,
                 'completionDate': completion,
                 'quarterlyCompliance': quarterly_compliance,
@@ -477,6 +567,11 @@ def parse_pm_tracker(wb):
     if not df.empty:
         df['zme'] = df['zme'].fillna('Unassigned')
         df['zone'] = df['zone'].fillna('Unknown')
+
+        if 'scheduleWeekRange' in df.columns:
+            df['Scheduled Week Range'] = df['scheduleWeekRange'].fillna('Unscheduled')
+        else:
+            df['Scheduled Week Range'] = 'Unscheduled'
 
         # Add Period Date helper columns for date/month/quarter/year breakdown
         if 'dueDate' in df.columns and df['dueDate'].notna().any():
@@ -601,7 +696,7 @@ def compute_zme_issue_table(issue_df, selected_months):
     # 1. Overall CM Efficiency % = Closed Faults / Faults Registered * 100
     # 2. CM-TAT Efficiency % = Closed Within TAT / Total Closed Faults * 100
     agg['cm_efficiency'] = (agg['closed'] / agg['total']).fillna(0.0) * 100
-    agg['tat_efficiency'] = (agg['within'] / agg['closed'].replace(0, pd.NA)).fillna(0.0) * 100
+    agg['tat_efficiency'] = (agg['within'] / agg['total']).fillna(0.0) * 100
     return agg.sort_values(by='total', ascending=False)
 
 
@@ -626,6 +721,32 @@ def compute_zme_pm_table(pm_df, selected_months):
     return agg.sort_values(by='planning', ascending=False)
 
 
+def compute_week_range_pm_table(pm_df, selected_months):
+    if pm_df.empty:
+        return pd.DataFrame()
+    pm = pm_df[pm_df['month'].isin(selected_months)] if selected_months else pm_df
+    if pm.empty or 'scheduleWeekRange' not in pm.columns:
+        return pd.DataFrame()
+
+    group_cols = ['scheduleWeekRange']
+    if 'weekStartDate' in pm.columns:
+        group_cols.append('weekStartDate')
+
+    agg = pm.groupby(group_cols, dropna=False).agg(
+        total_chargers=('ocppId', 'count'),
+        total_stations=('stationId', 'nunique'),
+        planning=('Is_PM_Planned', 'sum'),
+        done=('Is_PM_Done', 'sum'),
+        pending=('Is_PM_Pending', 'sum'),
+        advance=('Advance PM Done', 'sum'),
+    ).reset_index()
+
+    agg['pm_efficiency'] = (agg['done'] / agg['planning'].replace(0, pd.NA)).fillna(0.0) * 100
+    if 'weekStartDate' in agg.columns:
+        agg = agg.sort_values(by='weekStartDate', ascending=True)
+    return agg
+
+
 @st.cache_data(show_spinner=False)
 def generate_mpr_excel_report(issue_df, pm_df, selected_months):
     output = BytesIO()
@@ -638,14 +759,14 @@ def generate_mpr_excel_report(issue_df, pm_df, selected_months):
             closed_i = int(sel_i['_Is_Closed_'].sum()) if not sel_i.empty else 0
             within_tat = int(sel_i['_Is_Closed_Within_'].sum()) if not sel_i.empty else 0
             cm_eff = (closed_i / tot_i * 100) if tot_i > 0 else 0.0
-            tat_eff = (within_tat / closed_i * 100) if closed_i > 0 else 0.0
+            tat_eff = (within_tat / tot_i * 100) if tot_i > 0 else 0.0
             kpi_summary.extend([
                 {'Metric Category': 'Issue SLA Governance', 'Metric Name': 'Faults Registered', 'Value': tot_i},
                 {'Metric Category': 'Issue SLA Governance', 'Metric Name': 'Open Faults', 'Value': open_i},
                 {'Metric Category': 'Issue SLA Governance', 'Metric Name': 'Closed Faults', 'Value': closed_i},
                 {'Metric Category': 'Issue SLA Governance', 'Metric Name': 'Closed Within TAT', 'Value': within_tat},
-                {'Metric Category': 'Issue SLA Governance', 'Metric Name': 'Overall CM Efficiency %', 'Value': f"{cm_eff:.1f}%"},
-                {'Metric Category': 'Issue SLA Governance', 'Metric Name': 'CM-TAT Efficiency %', 'Value': f"{tat_eff:.1f}%"},
+                {'Metric Category': 'Issue SLA Governance', 'Metric Name': 'Overall CM Efficiency %', 'Value': f"{cm_eff:.2f}%"},
+                {'Metric Category': 'Issue SLA Governance', 'Metric Name': 'CM-TAT Efficiency %', 'Value': f"{tat_eff:.2f}%"},
             ])
 
         if not pm_df.empty and selected_months:
@@ -689,6 +810,11 @@ def generate_mpr_excel_report(issue_df, pm_df, selected_months):
                 if not pm_pending.empty:
                     cols_pend = ['ocppId', 'zme', 'zone', 'stationId', 'stationName', 'status', 'dueDate', 'month', 'PM Compliance Status']
                     pm_pending[[c for c in cols_pend if c in pm_pending.columns]].to_excel(writer, sheet_name='PM Pending', index=False)
+
+                pm_adv = sel_pm[sel_pm['Advance PM Done']]
+                if not pm_adv.empty:
+                    cols_adv = ['ocppId', 'zme', 'zone', 'stationId', 'stationName', 'status', 'completionDate', 'month', 'PM Compliance Status']
+                    pm_adv[[c for c in cols_adv if c in pm_adv.columns]].to_excel(writer, sheet_name='Advance PM Done', index=False)
 
                 zme_summary = compute_zme_pm_table(pm_df, selected_months)
                 if not zme_summary.empty:
@@ -1022,7 +1148,7 @@ def main():
         # Closed Within TAT = count(_Is_Closed_Within_)
         # Closed Without TAT = count(_Is_Closed_Without_)
         # Overall CM Efficiency % = (Closed Faults / Faults Registered) * 100
-        # CM-TAT Efficiency % = (Closed Within TAT / Total Closed Faults) * 100
+        # CM-TAT Efficiency % = (Closed Within TAT / Total Registered Faults) * 100
         total_issues = len(selected_issues)
         total_open = int(selected_issues['_Is_Open_'].sum()) if not selected_issues.empty else 0
         total_closed = int(selected_issues['_Is_Closed_'].sum()) if not selected_issues.empty else 0
@@ -1030,7 +1156,7 @@ def main():
         closed_without = int(selected_issues['_Is_Closed_Without_'].sum()) if not selected_issues.empty else 0
 
         overall_cm_eff = (total_closed / total_issues * 100) if total_issues > 0 else 0.0
-        cm_tat_eff = (closed_within / total_closed * 100) if total_closed > 0 else 0.0
+        cm_tat_eff = (closed_within / total_issues * 100) if total_issues > 0 else 0.0
 
         # KPI Row (7 Cards)
         k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
@@ -1045,9 +1171,9 @@ def main():
         with k5:
             st.markdown(f'<div class="metric-card red"><div class="metric-label">Closed Without TAT</div><div class="metric-val">{closed_without:,}</div><div class="metric-sub">SLA Breached</div></div>', unsafe_allow_html=True)
         with k6:
-            st.markdown(f'<div class="metric-card {"green" if overall_cm_eff >= 85 else "amber"}"><div class="metric-label">Overall CM Eff %</div><div class="metric-val">{overall_cm_eff:.1f}%</div><div class="metric-sub">Closed / Registered</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-card {"green" if overall_cm_eff >= 85 else "amber"}"><div class="metric-label">Overall CM Eff %</div><div class="metric-val">{overall_cm_eff:.2f}%</div><div class="metric-sub">Closed / Registered</div></div>', unsafe_allow_html=True)
         with k7:
-            st.markdown(f'<div class="metric-card {"green" if cm_tat_eff >= 80 else "amber"}"><div class="metric-label">CM-TAT Eff %</div><div class="metric-val">{cm_tat_eff:.1f}%</div><div class="metric-sub">Within TAT / Closed</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-card {"green" if cm_tat_eff >= 80 else "amber"}"><div class="metric-label">CM-TAT Eff %</div><div class="metric-val">{cm_tat_eff:.2f}%</div><div class="metric-sub">Within TAT / Registered</div></div>', unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
 
@@ -1076,7 +1202,7 @@ def main():
                     }).style.format({
                         'Faults Registered': '{:,}', 'Open Faults': '{:,}', 'Closed Faults': '{:,}',
                         'Closed Within TAT': '{:,}', 'Closed Without TAT': '{:,}',
-                        'Overall CM Efficiency %': '{:.1f}%', 'CM-TAT Efficiency %': '{:.1f}%'
+                        'Overall CM Efficiency %': '{:.2f}%', 'CM-TAT Efficiency %': '{:.2f}%'
                     }).background_gradient(subset=['Overall CM Efficiency %', 'CM-TAT Efficiency %'], cmap='Reds'),
                     use_container_width=True, height=320
                 )
@@ -1097,9 +1223,9 @@ def main():
             ).reset_index()
             # New Formulas:
             # Overall CM Efficiency % = Closed / Registered * 100
-            # CM-TAT Efficiency % = Within_TAT / Closed * 100
+            # CM-TAT Efficiency % = Within_TAT / Registered * 100
             zone_agg['Overall CM Efficiency %'] = (zone_agg['Closed'] / zone_agg['Registered'] * 100).round(1)
-            zone_agg['CM-TAT Efficiency %'] = (zone_agg['Within_TAT'] / zone_agg['Closed'].replace(0, pd.NA) * 100).fillna(0.0).round(1)
+            zone_agg['CM-TAT Efficiency %'] = (zone_agg['Within_TAT'] / zone_agg['Registered'].replace(0, pd.NA) * 100).fillna(0.0).round(1)
 
             col_z_c, col_z_t = st.columns([6, 6])
             with col_z_c:
@@ -1117,7 +1243,7 @@ def main():
                     zone_agg.rename(columns={'zone': 'Zone'}).style.format({
                         'Registered': '{:,}', 'Open': '{:,}', 'Closed': '{:,}',
                         'Within_TAT': '{:,}', 'Without_TAT': '{:,}',
-                        'Overall CM Efficiency %': '{:.1f}%', 'CM-TAT Efficiency %': '{:.1f}%'
+                        'Overall CM Efficiency %': '{:.2f}%', 'CM-TAT Efficiency %': '{:.2f}%'
                     }).background_gradient(subset=['Overall CM Efficiency %', 'CM-TAT Efficiency %'], cmap='Reds'),
                     use_container_width=True, height=300
                 )
@@ -1283,11 +1409,6 @@ def main():
         # Dynamic KPI calculations for selected month(s)
         total_chargers = len(selected_pm['ocppId'].dropna()) if not selected_pm.empty else 0
         total_stations = selected_pm['stationId'].nunique() if not selected_pm.empty else 0
-        # PM KPI formulas:
-        # Planning = valid schedule week/date count
-        # Done = Status YES + Actual Completion Date present
-        # Pending = Status NO + no Actual Completion Date + Quarterly Compliance NO
-        # Efficiency = PM Done / PM Planning * 100
         total_pm_planning = int(selected_pm['Is_PM_Planned'].sum()) if not selected_pm.empty else 0
         pm_done = int(selected_pm['Is_PM_Done'].sum()) if not selected_pm.empty else 0
         pm_pending = int(selected_pm['Is_PM_Pending'].sum()) if not selected_pm.empty else 0
@@ -1426,11 +1547,12 @@ def main():
 
         st.markdown("---")
 
-        # 5. Period Breakdown (Month, Quarter, Year, Date)
-        st.markdown('<div class="section-header">🗓️ 5. PM Scheduled Station Breakdown by Selection (Month, Quarter, Year, Date)</div>', unsafe_allow_html=True)
+        # 5. Period Breakdown (Week Range, Month, Quarter, Year, Date)
+        st.markdown('<div class="section-header">🗓️ 5. PM Scheduled Breakdown by Selection (Week Range, Month, Quarter, Year, Date)</div>', unsafe_allow_html=True)
         if not selected_pm.empty:
-            period_choice = st.radio("Group PM Scheduled Stations by:", ["Month", "Quarter", "Year", "Date"], horizontal=True, key="pm_period_choice")
+            period_choice = st.radio("Group PM Scheduled Stations by:", ["Schedule Week Range", "Month", "Quarter", "Year", "Date"], index=0, horizontal=True, key="pm_period_choice")
             period_col_map = {
+                "Schedule Week Range": "scheduleWeekRange",
                 "Month": "Scheduled Month",
                 "Quarter": "Scheduled Quarter",
                 "Year": "Scheduled Year",
@@ -1439,35 +1561,44 @@ def main():
             target_col = period_col_map[period_choice]
 
             if target_col in selected_pm.columns:
-                period_agg = selected_pm.groupby(target_col).agg(
+                group_cols = [target_col]
+                if target_col == 'scheduleWeekRange' and 'weekStartDate' in selected_pm.columns:
+                    group_cols.append('weekStartDate')
+
+                period_agg = selected_pm.groupby(group_cols, dropna=False).agg(
                     stations=('stationId', 'nunique'),
                     chargers=('ocppId', 'count'),
                     planning=('Is_PM_Planned', 'sum'),
                     done=('Is_PM_Done', 'sum'),
                     pending=('Is_PM_Pending', 'sum'),
                 ).reset_index()
-                period_agg['PM Efficiency %'] = (period_agg['done'] / period_agg['planning'] * 100).round(1)
+
+                if target_col == 'scheduleWeekRange' and 'weekStartDate' in period_agg.columns:
+                    period_agg = period_agg.sort_values(by='weekStartDate', ascending=True)
+
+                period_agg['PM Efficiency %'] = (period_agg['done'] / period_agg['planning'] * 100).fillna(0.0).round(1)
 
                 col_p_c, col_p_t = st.columns([6, 6])
                 with col_p_c:
                     st.plotly_chart(
                         plot_grouped_bar(
                             period_agg, x_col=target_col,
-                            y_cols=['stations', 'done', 'pending'],
+                            y_cols=['planning', 'done', 'pending'],
                             title=f"PM Work Orders by {period_choice}",
                             colors=['#991B1B', '#16A34A', '#DC2626']
                         ), use_container_width=True
                     )
                 with col_p_t:
                     st.write(f"##### Scheduled Stations Data Table ({period_choice} Level)")
+                    disp_cols = [c for c in [target_col, 'stations', 'chargers', 'planning', 'done', 'pending', 'PM Efficiency %'] if c in period_agg.columns]
                     st.dataframe(
-                        period_agg.rename(columns={
+                        period_agg[disp_cols].rename(columns={
                             target_col: f'Period ({period_choice})',
                             'stations': 'Stations Scheduled', 'chargers': 'Chargers Scheduled',
-                            'planning': 'PM Planning', 'done': 'PM Done', 'pending': 'PM Pending'
+                            'planning': 'PM Planning (Count)', 'done': 'PM Done', 'pending': 'PM Pending'
                         }).style.format({
                             'Stations Scheduled': '{:,}', 'Chargers Scheduled': '{:,}',
-                            'PM Planning': '{:,}', 'PM Done': '{:,}', 'PM Pending': '{:,}',
+                            'PM Planning (Count)': '{:,}', 'PM Done': '{:,}', 'PM Pending': '{:,}',
                             'PM Efficiency %': '{:.1f}%'
                         }).background_gradient(subset=['PM Efficiency %'], cmap='Reds'),
                         use_container_width=True, height=280
@@ -1476,17 +1607,18 @@ def main():
         st.markdown("---")
 
         # 5. Export PM Planned & PM Done Data Tables
-        st.markdown('<div class="section-header">📥 5. Data Tables (PM Planned & PM Done)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-header">📥 5. Data Tables (PM Governance Tables)</div>', unsafe_allow_html=True)
         if not selected_pm.empty:
-            sub_tab_planned, sub_tab_done, sub_tab_pending = st.tabs([
+            sub_tab_planned, sub_tab_done, sub_tab_pending, sub_tab_adv = st.tabs([
                 "📋 PM Planned Table",
                 "✅ PM Done Table",
-                "⏳ PM Pending Table"
+                "⏳ PM Pending Table",
+                "⚡ Advance PM Done Table"
             ])
 
             with sub_tab_planned:
                 planned_records = selected_pm[selected_pm['Is_PM_Planned']].copy()
-                cols_p = [c for c in ['ocppId', 'zme', 'zone', 'stationId', 'stationName', 'dueDate', 'month', 'PM Compliance Status'] if c in planned_records.columns]
+                cols_p = [c for c in ['ocppId', 'zme', 'zone', 'stationId', 'stationName', 'scheduleWeek', 'scheduleWeekRange', 'weekStartDate', 'weekEndDate', 'month', 'PM Compliance Status'] if c in planned_records.columns]
                 disp_planned = planned_records[cols_p]
                 
                 c_p_info, c_p_dl = st.columns([8, 4])
@@ -1504,7 +1636,7 @@ def main():
 
             with sub_tab_done:
                 done_records = selected_pm[selected_pm['Is_PM_Done']].copy()
-                cols_d = [c for c in ['ocppId', 'zme', 'zone', 'stationId', 'stationName', 'status', 'completionDate', 'month', 'PM Compliance Status'] if c in done_records.columns]
+                cols_d = [c for c in ['ocppId', 'zme', 'zone', 'stationId', 'stationName', 'status', 'completionDate', 'scheduleWeekRange', 'month', 'PM Compliance Status'] if c in done_records.columns]
                 disp_done = done_records[cols_d]
 
                 c_d_info, c_d_dl = st.columns([8, 4])
@@ -1522,7 +1654,7 @@ def main():
 
             with sub_tab_pending:
                 pending_records = selected_pm[selected_pm['Is_PM_Pending']].copy()
-                cols_pend = [c for c in ['ocppId', 'zme', 'zone', 'stationId', 'stationName', 'status', 'dueDate', 'month', 'PM Compliance Status'] if c in pending_records.columns]
+                cols_pend = [c for c in ['ocppId', 'zme', 'zone', 'stationId', 'stationName', 'status', 'scheduleWeekRange', 'weekStartDate', 'weekEndDate', 'month', 'PM Compliance Status'] if c in pending_records.columns]
                 disp_pending = pending_records[cols_pend]
 
                 c_pend_info, c_pend_dl = st.columns([8, 4])
@@ -1537,6 +1669,24 @@ def main():
                         use_container_width=True
                     )
                 st.dataframe(disp_pending, use_container_width=True, height=280)
+
+            with sub_tab_adv:
+                adv_records = selected_pm[selected_pm['Advance PM Done']].copy()
+                cols_adv = [c for c in ['ocppId', 'zme', 'zone', 'stationId', 'stationName', 'status', 'completionDate', 'scheduleWeekRange', 'month', 'PM Compliance Status'] if c in adv_records.columns]
+                disp_adv = adv_records[cols_adv]
+
+                c_adv_info, c_adv_dl = st.columns([8, 4])
+                with c_adv_info:
+                    st.write(f"Showing **{len(adv_records):,}** Advance PM Done chargers for selected month(s):")
+                with c_adv_dl:
+                    st.download_button(
+                        "📥 Download Advance PM Done CSV",
+                        data=disp_adv.to_csv(index=False).encode('utf-8'),
+                        file_name=f"Advance_PM_Done_{month_slug}.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+                st.dataframe(disp_adv, use_container_width=True, height=280)
 
     # TAB 3: DATA EXPLORER
     with tab_raw:
