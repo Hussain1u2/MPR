@@ -1,31 +1,60 @@
 """
-ChargeZone MPR & PM Governance Dashboard - Executive Red & White Theme
-Streamlit Application for Issue Tracker & PM Tracker Analytics.
+ChargeZone MPR - Issue Tracker Dashboard
+Executive Streamlit Application for Operational Issue Tracking, SLA Governance & Field Analytics.
 """
+import calendar
 from datetime import datetime
 from io import BytesIO
+import os
 import re
 
 import openpyxl
+from openpyxl.chart import BarChart, PieChart, Reference
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 
 st.set_page_config(
-    page_title="ChargeZone | Executive MPR & PM Dashboard",
+    page_title="ChargeZone | MPR - Issue Tracker Dashboard",
     page_icon="⚡",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
-# Cleaning & Error Handling
+# ─── Constants & Configurations ───────────────────────────────────────────────
 
 BAD_VALUES = {
     '', '#REF!', '#N/A', '#VALUE!', '#NAME?', 'NONE', 'NULL', 'NAN', 'NAT',
     'N/A', 'NA', 'N.A.', 'N.A', '<NA>', '#N/A N/A', 'UNKNOWN', 'UNDEFINED',
-    'REF!', '#NULL!', '#NUM!', '#DIV/0!', '-', '--'
+    'REF!', '#NULL!', '#NUM!', '#DIV/0!', '-', '--', 'NONE', '0'
 }
+
+_MONTH_NUM = {
+    'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
+    'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12
+}
+
+# Modern executive color palette
+COLOR_PRIMARY = "#DC2626"       # Crimson Red
+COLOR_DARK = "#991B1B"          # Deep Burgundy
+COLOR_ACCENT = "#7F1D1D"        # Dark Cherry
+COLOR_SUCCESS = "#10B981"       # Emerald Green
+COLOR_WARNING = "#F59E0B"       # Amber Orange
+COLOR_DANGER = "#EF4444"        # Red Alert
+COLOR_INFO = "#3B82F6"          # Royal Blue
+COLOR_INDIGO = "#6366F1"        # Indigo
+COLOR_PURPLE = "#8B5CF6"        # Purple
+COLOR_SLATE = "#64748B"         # Slate Grey
+COLOR_LIGHT_BG = "#F8FAFC"      # Clean Light Background
+COLOR_CARD_BG = "#FFFFFF"
+
+PALETTE_VIBRANT = ["#DC2626", "#2563EB", "#10B981", "#F59E0B", "#8B5CF6", "#EC4899", "#06B6D4", "#64748B"]
+PALETTE_STATUS = {"Open": "#EF4444", "In Progress": "#F59E0B", "Resolved": "#10B981", "Closed": "#1E293B"}
+PALETTE_SLA = {"Within TAT": "#10B981", "Breached TAT": "#EF4444", "Pending": "#F59E0B"}
+
+# ─── Helper Functions ─────────────────────────────────────────────────────────
 
 def clean_val(v):
     if v is None or pd.isna(v):
@@ -57,15 +86,31 @@ def find_col(df, possible_names):
                 return orig
     return None
 
-def fiscal_year_quarter(dt):
-    if not isinstance(dt, (datetime, pd.Timestamp)) or pd.isna(dt):
-        return 'Unscheduled FY', 0, 'Unscheduled Q', 'Unscheduled'
-    fy_start = dt.year if dt.month >= 4 else dt.year - 1
-    fy_label = f"FY{str(fy_start)[-2:]}{str(fy_start + 1)[-2:]}"
-    quarter_num = (dt.month - 4) % 12 // 3 + 1
-    return fy_label, quarter_num, f"{fy_label} Q{quarter_num}", dt.strftime('%b-%y')
+def parse_date_val(val):
+    """Robust date parser handling Timestamp, datetime, Excel serial integers, and date strings."""
+    if val is None or pd.isna(val):
+        return None
+    if isinstance(val, (datetime, pd.Timestamp)):
+        return pd.Timestamp(val)
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        num_val = float(val)
+        if 35000 <= num_val <= 70000:
+            try:
+                dt_conv = pd.to_datetime(num_val, unit='D', origin='1899-12-30')
+                if not pd.isna(dt_conv):
+                    return pd.Timestamp(dt_conv)
+            except Exception:
+                pass
+    s = str(val).strip()
+    if not s or s.upper() in BAD_VALUES:
+        return None
+    if re.match(r'^\d{4}[-/]', s):
+        parsed_dt = pd.to_datetime(s, errors='coerce', dayfirst=False)
+    else:
+        parsed_dt = pd.to_datetime(s, errors='coerce', dayfirst=True)
+    return None if pd.isna(parsed_dt) else pd.Timestamp(parsed_dt)
 
-# Excel Parsers
+# ─── Issue Tracker Excel Parser ───────────────────────────────────────────────
 
 def select_sheet_name(sheetnames, preferred_names, fallback_keyword):
     if not sheetnames:
@@ -86,1625 +131,2397 @@ def select_sheet_name(sheetnames, preferred_names, fallback_keyword):
     return sheetnames[0]
 
 
-def parse_issue_tracker(wb):
-    sheet_name = select_sheet_name(wb.sheetnames, ['Issue Tracker', 'Issue Data'], 'issue')
-    if not sheet_name or sheet_name not in wb.sheetnames:
-        return pd.DataFrame()
-    
-    ws = wb[sheet_name]
-    rows = list(ws.iter_rows(values_only=True))
-    if not rows:
-        return pd.DataFrame()
-
-    header_idx = 0
-    for idx, r in enumerate(rows[:15]):
-        row_norms = [norm_header(c) for c in r if c is not None]
-        if 'issueid' in row_norms or 'srno' in row_norms or ('zone' in row_norms and 'status' in row_norms):
-            header_idx = idx
-            break
-
-    header_row = rows[header_idx]
-    idx_map = {norm_header(h): i for i, h in enumerate(header_row) if h is not None}
-    
-    col_issueid = idx_map.get('issueid', idx_map.get('srno', idx_map.get('ticketid')))
-    col_issuedate = idx_map.get('issuedate', idx_map.get('createddate', idx_map.get('date')))
-    col_zone = idx_map.get('zone', idx_map.get('region'))
-    col_zme = idx_map.get('zme', idx_map.get('leadzme', idx_map.get('managername', idx_map.get('zonemanager'))))
-    col_status = idx_map.get('status', idx_map.get('ticketstatus', idx_map.get('issuestatus')))
-    col_severity = idx_map.get('severity', idx_map.get('priority'))
-    col_tat = idx_map.get('tatcompliance', idx_map.get('slacompliance', idx_map.get('compliance')))
-    col_type = idx_map.get('issuetype', idx_map.get('category'))
-    col_subtype = idx_map.get('issuesubtype', idx_map.get('subtype', idx_map.get('faultsubtype')))
-    col_stationid = idx_map.get('stationid', idx_map.get('siteid', idx_map.get('ocppid')))
-    col_stationname = idx_map.get('stationname', idx_map.get('sitename'))
-    col_segment = idx_map.get('b2bb2c', idx_map.get('segment', idx_map.get('customersegment')))
-    col_ocpp = idx_map.get('ocppid', idx_map.get('chargerid'))
-
-    records = []
-    for r in rows[header_idx + 1:]:
-        if not r or len(r) <= max(filter(lambda x: x is not None, [col_issueid, col_zone, col_status]), default=0):
-            continue
-        
-        issue_id = clean_val(r[col_issueid]) if col_issueid is not None else None
-        if issue_id is None:
-            continue
-            
-        issue_date = r[col_issuedate] if col_issuedate is not None and col_issuedate < len(r) else None
-        if isinstance(issue_date, str):
-            issue_date = pd.to_datetime(issue_date, errors='coerce', dayfirst=True)
-            if pd.isna(issue_date):
-                issue_date = None
-        
-        if isinstance(issue_date, (datetime, pd.Timestamp)) and not pd.isna(issue_date):
-            fy, qnum, qlabel, mlabel = fiscal_year_quarter(issue_date)
-            iso_year, iso_week, _ = issue_date.isocalendar()
-            start_dt = pd.Timestamp(datetime.fromisocalendar(iso_year, iso_week, 1)).to_pydatetime()
-            end_dt = pd.Timestamp(datetime.fromisocalendar(iso_year, iso_week, 7)).to_pydatetime()
-            week_range = f"W{iso_week:02d} ({start_dt.strftime('%d-%b-%Y')} to {end_dt.strftime('%d-%b-%Y')})"
-            schedule_week = f"W{iso_week:02d}"
-        else:
-            fy, qnum, qlabel, mlabel = 'Unscheduled FY', 0, 'Unscheduled Q', 'Unscheduled'
-            week_range = "Unscheduled"
-            schedule_week = "Unscheduled"
-            start_dt = None
-            end_dt = None
-
-        status_raw = str(clean_val(r[col_status]) or 'Open').strip()
-        # A blank TAT Compliance cell means "not yet determined" (e.g. the
-        # issue is still open) -- it must NOT default to 'No', which would
-        # falsely assert an SLA breach that was never actually recorded.
-        tat_clean = clean_val(r[col_tat])
-        tat_raw = str(tat_clean).strip().upper() if tat_clean is not None else ''
-        
-        records.append({
-            'issueId': issue_id,
-            'zme': clean_val(r[col_zme]) if col_zme is not None and col_zme < len(r) else 'Unassigned',
-            'zone': clean_val(r[col_zone]) if col_zone is not None and col_zone < len(r) else 'Unknown',
-            'status': status_raw,
-            'severity': clean_val(r[col_severity]) if col_severity is not None and col_severity < len(r) else 'Normal',
-            'tatCompliance': tat_raw,
-            'issueType': clean_val(r[col_type]) if col_type is not None and col_type < len(r) else 'General',
-            'issueSubType': clean_val(r[col_subtype]) if col_subtype is not None and col_subtype < len(r) else 'General',
-            'stationId': clean_val(r[col_stationid]) if col_stationid is not None and col_stationid < len(r) else 'N/A',
-            'stationName': clean_val(r[col_stationname]) if col_stationname is not None and col_stationname < len(r) else 'N/A',
-            'ocppId': clean_val(r[col_ocpp]) if col_ocpp is not None and col_ocpp < len(r) else 'N/A',
-            'segment': clean_val(r[col_segment]) if col_segment is not None and col_segment < len(r) else 'B2C',
-            'fy': fy, 'quarter': qnum, 'quarterLabel': qlabel, 'month': mlabel,
-            'issueDate': issue_date,
-            'scheduleWeek': schedule_week,
-            'weekStartDate': start_dt,
-            'weekEndDate': end_dt,
-            'scheduleWeekRange': week_range,
-        })
-
-    df = pd.DataFrame(records)
-    if df.empty:
-        return df
-
-    df['zme'] = df['zme'].fillna('Unassigned')
-    df['zone'] = df['zone'].fillna('Unknown')
-
-    # Executive SLA & CM Formulas:
-    # 1. Closed Faults = Tickets with status CLOSED or RESOLVED
-    # 2. Open Faults = Tickets with status NOT CLOSED/RESOLVED
-    # 3. Closed Within TAT = Closed Tickets with TAT Compliance == YES
-    # 4. Closed Without TAT = Closed Tickets with TAT Compliance == NO
-    # 5. Overall CM Efficiency % = Closed Faults / Faults Registered * 100
-    # 6. CM-TAT Efficiency % = Closed Within TAT / Total Closed Faults * 100
-    status_upper = df['status'].astype(str).str.strip().str.upper()
-    df['_Is_Closed_'] = status_upper.isin(['CLOSED', 'RESOLVED'])
-    df['_Is_Open_'] = ~df['_Is_Closed_']
-
-    tat_upper = df['tatCompliance'].astype(str).str.strip().str.upper()
-    df['_Is_Within_'] = (tat_upper == 'YES')
-    df['_Is_Without_'] = (tat_upper == 'NO')
-    df['_Is_Closed_Within_'] = df['_Is_Closed_'] & df['_Is_Within_']
-    df['_Is_Closed_Without_'] = df['_Is_Closed_'] & df['_Is_Without_']
-
-    return df
-
-
-def _infer_week_year(rows, header_idx, header_row, status_col):
-    """Infer the calendar year associated with a status block."""
-    nearby_text = " ".join(
-        str(x or "") for x in header_row[max(0, status_col - 3): min(len(header_row), status_col + 4)]
-    )
-    years = re.findall(r"\b(20\d{2})\b", nearby_text)
-    if years:
-        return int(years[0])
-
-    if header_idx > 0:
-        for v in rows[header_idx - 1]:
-            if isinstance(v, (datetime, pd.Timestamp)) and not pd.isna(v):
-                return int(v.year)
-
-    for rr in reversed(rows[max(0, header_idx - 4):header_idx]):
-        for v in rr:
-            if isinstance(v, (datetime, pd.Timestamp)) and not pd.isna(v):
-                return int(v.year)
-            if isinstance(v, str):
-                m = re.search(r"\b(20\d{2})\b", v)
-                if m:
-                    return int(m.group(1))
-
-    return datetime.now().year
-
-
-def _schedule_week_to_range(value, year):
-    """Convert an Excel schedule week / date / serial number value into (start_date, end_date, range_str)."""
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return None, None, 'Unscheduled'
-
-    single_dt = None
-    week_num = None
-
-    if isinstance(value, (datetime, pd.Timestamp)):
-        single_dt = pd.Timestamp(value).to_pydatetime()
-    elif isinstance(value, (int, float)) and not isinstance(value, bool):
-        num_val = float(value)
-        if 35000 <= num_val <= 70000:
-            try:
-                dt_conv = pd.to_datetime(num_val, unit='D', origin='1899-12-30')
-                if not pd.isna(dt_conv):
-                    single_dt = pd.Timestamp(dt_conv).to_pydatetime()
-            except Exception:
-                pass
-        
-        if single_dt is None:
-            w = int(num_val)
-            if 1 <= w <= 53:
-                week_num = w
+def parse_issue_tracker(wb_or_bytes):
+    """Extract, clean, and enrich all fields from the Issue Tracker worksheet."""
+    if isinstance(wb_or_bytes, (bytes, bytearray)):
+        wb = openpyxl.load_workbook(BytesIO(wb_or_bytes), read_only=True, data_only=True)
+        should_close = True
     else:
-        s = str(value).strip()
-        if not s or s.upper() in BAD_VALUES:
-            return None, None, 'Unscheduled'
+        wb = wb_or_bytes
+        should_close = False
 
-        m = re.search(r"(?:W|WK|WEEK)\s*[-#:]?\s*(\d{1,2})\b", s, flags=re.I)
-        if m:
-            w = int(m.group(1))
-            if 1 <= w <= 53:
-                week_num = w
-        elif s.isdigit() or re.fullmatch(r"\d{1,5}", s):
-            val_int = int(s)
-            if 1 <= val_int <= 53:
-                week_num = val_int
-            elif 35000 <= val_int <= 70000:
-                try:
-                    dt_conv = pd.to_datetime(val_int, unit='D', origin='1899-12-30')
-                    if not pd.isna(dt_conv):
-                        single_dt = pd.Timestamp(dt_conv).to_pydatetime()
-                except Exception:
-                    pass
-        
-        if single_dt is None and week_num is None:
-            if re.match(r"^\d{4}[-/]", s):
-                parsed_dt = pd.to_datetime(s, errors="coerce", dayfirst=False)
-            else:
-                parsed_dt = pd.to_datetime(s, errors="coerce", dayfirst=True)
+    try:
+        sheet_name = select_sheet_name(wb.sheetnames, ['Issue Tracker', 'Issue Data', 'Issues', 'Issue_Tracker'], 'issue')
+        if not sheet_name or sheet_name not in wb.sheetnames:
+            return pd.DataFrame()
 
-            if not pd.isna(parsed_dt) and parsed_dt.year >= 2000:
-                single_dt = pd.Timestamp(parsed_dt).to_pydatetime()
-            else:
-                m_standalone = re.search(r"\b([1-9]|[1-4][0-9]|5[0-3])\b", s)
-                if m_standalone:
-                    week_num = int(m_standalone.group(1))
+        ws = wb[sheet_name]
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            return pd.DataFrame()
 
-    if single_dt is not None:
-        try:
-            iso_year, iso_week, _ = single_dt.isocalendar()
-            start_dt = pd.Timestamp(datetime.fromisocalendar(iso_year, iso_week, 1)).to_pydatetime()
-            end_dt = pd.Timestamp(datetime.fromisocalendar(iso_year, iso_week, 7)).to_pydatetime()
-            range_str = f"W{iso_week:02d} ({start_dt.strftime('%d-%b-%Y')} to {end_dt.strftime('%d-%b-%Y')})"
-            return start_dt, end_dt, range_str
-        except Exception:
-            start_dt = single_dt
-            end_dt = single_dt
-            range_str = start_dt.strftime('%d-%b-%Y')
-            return start_dt, end_dt, range_str
+        header_idx = 0
+        for idx, r in enumerate(rows[:15]):
+            row_norms = [norm_header(c) for c in r if c is not None]
+            if 'issueid' in row_norms or 'srno' in row_norms or ('zone' in row_norms and 'status' in row_norms):
+                header_idx = idx
+                break
 
-    if week_num is not None:
-        try:
-            target_year = int(year) if year and 2000 <= int(year) <= 2100 else datetime.now().year
-            start_dt = pd.Timestamp(datetime.fromisocalendar(target_year, week_num, 1)).to_pydatetime()
-            end_dt = pd.Timestamp(datetime.fromisocalendar(target_year, week_num, 7)).to_pydatetime()
-            range_str = f"W{week_num:02d} ({start_dt.strftime('%d-%b-%Y')} to {end_dt.strftime('%d-%b-%Y')})"
-            return start_dt, end_dt, range_str
-        except ValueError:
-            return None, None, 'Unscheduled'
+        header_row = rows[header_idx]
+        idx_map = {norm_header(h): i for i, h in enumerate(header_row) if h is not None}
 
-    return None, None, 'Unscheduled'
+        # Key Index Mappings
+        col_srno = idx_map.get('srno', idx_map.get('srno.'))
+        col_issueid = idx_map.get('issueid', idx_map.get('ticketid', idx_map.get('srno')))
+        col_ocpp = idx_map.get('ocppid', idx_map.get('chargerid'))
+        col_jira = idx_map.get('jirafdticket', idx_map.get('jiraticket', idx_map.get('fdticket')))
+        col_severity = idx_map.get('severity', idx_map.get('priority'))
+        col_issuedate = idx_map.get('issuedate', idx_map.get('createddate', idx_map.get('date')))
+        col_status = idx_map.get('status', idx_map.get('ticketstatus', idx_map.get('issuestatus')))
+        col_type = idx_map.get('issuetype', idx_map.get('category', idx_map.get('faulttype')))
+        col_subtype = idx_map.get('issuesubtype', idx_map.get('subtype', idx_map.get('faultsubtype')))
+        col_desc = idx_map.get('issuedescription', idx_map.get('description', idx_map.get('faultdetails')))
+        col_resdate = idx_map.get('resolutiondate', idx_map.get('resolveddate', idx_map.get('closeddate')))
+        col_restdate = idx_map.get('restorationdate', idx_map.get('restoreddate'))
+        col_action = idx_map.get('correctiveactiontaken', idx_map.get('correctiveaction', idx_map.get('actiontaken')))
+        col_remarks = idx_map.get('remarks1', idx_map.get('remarks', idx_map.get('remark')))
+        col_state = idx_map.get('state', idx_map.get('province'))
+        col_zone = idx_map.get('zone', idx_map.get('region'))
+        col_segment = idx_map.get('b2bb2c', idx_map.get('segment', idx_map.get('customersegment')))
+        col_zme = idx_map.get('zme', idx_map.get('leadzme', idx_map.get('managername', idx_map.get('zonemanager'))))
+        col_manager = idx_map.get('managername', idx_map.get('reportingmanager', idx_map.get('leadmanager')))
+        col_dep = idx_map.get('dependency', idx_map.get('owner', idx_map.get('assignee')))
+        col_stationid = idx_map.get('stationid', idx_map.get('siteid', idx_map.get('stationcode')))
+        col_stationname = idx_map.get('stationname', idx_map.get('sitename', idx_map.get('location')))
+        col_tatdays = idx_map.get('tatdays', idx_map.get('sladays', idx_map.get('targettat')))
+        col_tdoc = idx_map.get('tdoc', idx_map.get('targetdate', idx_map.get('duedate')))
+        col_report = idx_map.get('reportfilling', idx_map.get('reportrequired'))
+        col_age = idx_map.get('ageofissue', idx_map.get('age', idx_map.get('ticketage')))
+        col_tat = idx_map.get('tatcompliance', idx_map.get('slacompliance', idx_map.get('compliance')))
+        col_make = idx_map.get('chargermake', idx_map.get('make', idx_map.get('oem', idx_map.get('chargeroem'))))
 
-
-def _schedule_week_to_date(value, year):
-    start_dt, _, _ = _schedule_week_to_range(value, year)
-    return start_dt
-
-
-def classify_pm_blocks(rows, header_idx):
-    schedule_row = rows[header_idx - 1] if header_idx > 0 else [None] * len(rows[header_idx])
-    header_row = rows[header_idx]
-
-    status_cols = []
-    completion_cols = []
-    compliance_cols = []
-    q_sched_cols = {}
-
-    for i, h in enumerate(header_row):
-        text = str(h or "").strip().lower()
-        if "actual completion date" in text or "completion date" in text:
-            completion_cols.append(i)
-        elif "quarterly" in text and "compliance" in text:
-            compliance_cols.append(i)
-        elif "quarterly schedule" in text or "quarter schedule" in text or "pm schedule" in text:
-            q_sched_cols[i] = str(h).strip()
-        elif "status" in text and "station" not in text and "inspection" not in text:
-            status_cols.append(i)
-
-    blocks = []
-    for idx, sc in enumerate(status_cols):
-        next_sc = status_cols[idx + 1] if idx + 1 < len(status_cols) else len(header_row)
-
-        block_completion = [c for c in completion_cols if sc < c < next_sc]
-        block_compliance = [c for c in compliance_cols if sc < c < next_sc]
-
-        if not block_completion and completion_cols:
-            block_completion = [min(completion_cols, key=lambda c: abs(c - sc))]
-        if not block_compliance and compliance_cols:
-            block_compliance = [min(compliance_cols, key=lambda c: abs(c - sc))]
-
-        prec_q = [qc for qc in q_sched_cols if qc <= sc]
-        q_col = max(prec_q) if prec_q else None
-
-        schedule_value = schedule_row[sc] if sc < len(schedule_row) else None
-        if clean_val(schedule_value) is None and header_idx > 1:
-            prev_row2 = rows[header_idx - 2]
-            schedule_value = prev_row2[sc] if sc < len(prev_row2) else None
-        if clean_val(schedule_value) is None:
-            schedule_value = header_row[sc] if sc < len(header_row) else None
-
-        week_year = _infer_week_year(rows, header_idx, header_row, sc)
-        start_dt, end_dt, range_str = _schedule_week_to_range(schedule_value, week_year)
-
-        blocks.append({
-            "statusCol": sc,
-            "completionCol": block_completion[0] if block_completion else None,
-            "complianceCol": block_compliance[0] if block_compliance else None,
-            "qSchedCol": q_col,
-            "headerText": str(header_row[sc]),
-            "scheduleValue": clean_val(schedule_value),
-            "scheduleWeekYear": week_year,
-            "dueDate": start_dt,
-            "weekStartDate": start_dt,
-            "weekEndDate": end_dt,
-            "scheduleWeekRange": range_str,
-        })
-
-    return blocks
-
-
-def parse_pm_tracker(wb):
-    sheet_name = select_sheet_name(wb.sheetnames, ['PM Tracker B2C- B2B', 'PM Tracker B2C-B2B', 'PM Tracker', 'PM Data'], 'pm')
-    if not sheet_name or sheet_name not in wb.sheetnames:
-        return pd.DataFrame()
-
-    ws = wb[sheet_name]
-    rows = list(ws.iter_rows(values_only=True))
-    if not rows:
-        return pd.DataFrame()
-
-    header_idx = 1
-    for idx, r in enumerate(rows[:10]):
-        row_norms = [norm_header(c) for c in r if c is not None]
-        if 'ocppid' in row_norms or 'leadzme' in row_norms:
-            header_idx = idx
-            break
-
-    header_row = rows[header_idx]
-    due_date_row = rows[header_idx - 1] if header_idx > 0 else [None] * len(header_row)
-
-    station_fields = [norm_header(h) for h in header_row[:15]]
-    ocpp_pos = station_fields.index('ocppid') if 'ocppid' in station_fields else 1
-    zme_pos = station_fields.index('zme') if 'zme' in station_fields else 4
-    lead_zme_pos = station_fields.index('leadzme') if 'leadzme' in station_fields else 3
-    zone_pos = station_fields.index('zone') if 'zone' in station_fields else 7
-    station_id_pos = station_fields.index('stationid') if 'stationid' in station_fields else 10
-    station_name_pos = station_fields.index('stationname') if 'stationname' in station_fields else 5
-    segment_pos = station_fields.index('b2bb2c') if 'b2bb2c' in station_fields else 8
-    status_pos = station_fields.index('stationstatus') if 'stationstatus' in station_fields else 11
-
-    blocks = classify_pm_blocks(rows, header_idx)
-
-    records = []
-    for r in rows[header_idx + 1:]:
-        if len(r) <= ocpp_pos or r[ocpp_pos] is None:
-            continue
-
-        ocpp_val = clean_val(r[ocpp_pos])
-        if ocpp_val is None:
-            continue
-
-        zme_val = clean_val(r[lead_zme_pos]) if lead_zme_pos < len(r) else None
-        if zme_val is None and zme_pos < len(r):
-            zme_val = clean_val(r[zme_pos])
-        if zme_val is None:
-            zme_val = 'Unassigned'
-
-        zone_val = clean_val(r[zone_pos]) if zone_pos < len(r) else 'Unknown'
-        station_id_val = clean_val(r[station_id_pos]) if station_id_pos < len(r) else 'N/A'
-        station_name_val = clean_val(r[station_name_pos]) if station_name_pos < len(r) else 'N/A'
-        segment_val = clean_val(r[segment_pos]) if segment_pos < len(r) else 'B2C'
-        stn_status_val = clean_val(r[status_pos]) if status_pos < len(r) else 'Live'
-        stn_status_str = str(stn_status_val or 'Live').strip().upper()
-
-        # Strict Filter: Only process Live stations with valid OCPP ID
-        if stn_status_str != 'LIVE':
-            continue
-
-        for b in blocks:
-            sc = b['statusCol']
-            if sc >= len(r):
-                continue
-            
-            raw_st = r[sc]
-            st_clean = clean_val(raw_st)
-            
-            due_date = b.get('dueDate')
-            week_start = b.get('weekStartDate')
-            week_end = b.get('weekEndDate')
-            week_range = b.get('scheduleWeekRange')
-
-            if due_date is None:
-                due_raw = due_date_row[sc] if sc < len(due_date_row) else None
-                year_val = b.get('scheduleWeekYear', datetime.now().year)
-                week_start, week_end, week_range = _schedule_week_to_range(due_raw, year_val)
-                due_date = week_start
-
-            if due_date is None:
+        records = []
+        for r_idx, r in enumerate(rows[header_idx + 1:], start=1):
+            if not r or all(c is None for c in r):
                 continue
 
-            fy, qnum, qlabel, mlabel = fiscal_year_quarter(due_date)
-
-            cc = b['completionCol']
-            completion = r[cc] if cc is not None and cc < len(r) else None
-            if isinstance(completion, str):
-                completion = pd.to_datetime(completion, errors='coerce', dayfirst=True)
-                if pd.isna(completion):
-                    completion = None
-            if not isinstance(completion, (datetime, pd.Timestamp)):
-                completion = None
-
-            qc = b.get('complianceCol')
-            quarterly_compliance = r[qc] if qc is not None and qc < len(r) else None
-            quarterly_compliance = clean_val(quarterly_compliance)
-
-            st_str = str(st_clean or '').strip().upper()
-            qc_str = str(quarterly_compliance or '').strip().upper()
-
-            # Executive PM Governance Rules:
-            # 1. PM Planning = Derived from charger's Quarterly Schedule week for this block's month/year (or active status/completion date).
-            # 2. PM Done = Actual Completion Date is present (completion is not None or status == YES).
-            # 3. PM Pending = PM Planning - PM Done (Is_PM_Planned and not Is_PM_Done).
-            # 4. PM Efficiency % = PM Done / PM Planning * 100.
-            q_col = b.get('qSchedCol')
-            q_sched_val = clean_val(r[q_col]) if q_col is not None and q_col < len(r) else None
-
-            is_planned = False
-            if q_sched_val:
-                year_val = b.get('scheduleWeekYear', due_date.year if due_date else datetime.now().year)
-                q_start_dt, _, _ = _schedule_week_to_range(q_sched_val, year_val)
-                if q_start_dt and due_date and q_start_dt.month == due_date.month and q_start_dt.year == due_date.year:
-                    is_planned = True
-
-            has_pm_entry = (st_clean is not None) or (completion is not None) or (quarterly_compliance is not None)
-            if st_str in ['UNSCHEDULED', 'NOT PLANNED', 'NO PLAN', 'OFF', 'CANCELLED', 'N/A', 'NONE']:
-                if completion is None:
-                    has_pm_entry = False
-
-            if not is_planned and (q_col is None or q_sched_val is None):
-                if has_pm_entry:
-                    is_planned = True
-
-            is_done = (completion is not None or st_str in ['YES', 'DONE', 'COMPLETED', 'TRUE', '1', 'PM DONE', 'EXECUTED', 'PASS', 'PASSED'])
-            if is_done:
-                is_planned = True
-
-            is_pending = is_planned and not is_done
-
-            # 4. Advance PM Done: Actual completion date is before scheduled week start date
-            adv_done = False
-            if is_done and completion is not None and due_date is not None:
-                if completion < due_date:
-                    adv_done = True
-
-            # PM Compliance Status Formula
-            if is_planned:
-                if is_done:
-                    if completion is not None and due_date is not None:
-                        if completion < due_date:
-                            pm_compliance = '🟡 Advance PM Done (Before Schedule)'
-                        elif week_end is not None and completion <= week_end:
-                            pm_compliance = '🟢 On-Time (As Scheduled)'
-                        elif week_end is not None and completion > week_end:
-                            pm_compliance = '🟠 Completed Delayed'
-                        else:
-                            pm_compliance = '🟢 On-Time (As Scheduled)'
-                    else:
-                        pm_compliance = '🟢 Completed'
+            raw_issue_id = r[col_issueid] if col_issueid is not None and col_issueid < len(r) else None
+            issue_id = clean_val(raw_issue_id)
+            if issue_id is None:
+                raw_ocpp = r[col_ocpp] if col_ocpp is not None and col_ocpp < len(r) else None
+                if clean_val(raw_ocpp) is not None:
+                    issue_id = f"CZ-{r_idx:04d}"
                 else:
-                    if due_date is not None and datetime.now() > due_date:
-                        pm_compliance = '🔴 Overdue / Breached Schedule'
-                    else:
-                        pm_compliance = '⚪ Pending (In Schedule)'
+                    continue
+
+            # Date Parsing
+            raw_issue_date = r[col_issuedate] if col_issuedate is not None and col_issuedate < len(r) else None
+            issue_date = parse_date_val(raw_issue_date)
+
+            raw_res_date = r[col_resdate] if col_resdate is not None and col_resdate < len(r) else None
+            resolution_date = parse_date_val(raw_res_date)
+
+            raw_rest_date = r[col_restdate] if col_restdate is not None and col_restdate < len(r) else None
+            restoration_date = parse_date_val(raw_rest_date)
+
+            raw_tdoc = r[col_tdoc] if col_tdoc is not None and col_tdoc < len(r) else None
+            tdoc_date = parse_date_val(raw_tdoc)
+
+            # Month and Week formatting
+            if issue_date is not None:
+                mlabel = issue_date.strftime('%b-%y')
+                iso_year, iso_week, _ = issue_date.isocalendar()
+                start_dt = pd.Timestamp(datetime.fromisocalendar(iso_year, iso_week, 1)).to_pydatetime()
+                end_dt = pd.Timestamp(datetime.fromisocalendar(iso_year, iso_week, 7)).to_pydatetime()
+                week_range = f"W{iso_week:02d} ({start_dt.strftime('%d-%b')} to {end_dt.strftime('%d-%b-%Y')})"
+                schedule_week = f"W{iso_week:02d}"
             else:
-                pm_compliance = '⚪ Unscheduled'
+                mlabel = 'Unscheduled'
+                week_range = "Unscheduled"
+                schedule_week = "Unscheduled"
+                start_dt = None
+                end_dt = None
+
+            # Status & Severity
+            status_raw = str(clean_val(r[col_status]) if col_status is not None and col_status < len(r) else 'Open').strip()
+            if status_raw.upper() in ['RESOLVED', 'CLOSED', 'COMPLETE', 'COMPLETED']:
+                norm_status = 'Closed' if 'CLOSE' in status_raw.upper() else 'Resolved'
+            elif status_raw.upper() in ['OPEN', 'PENDING', 'NEW', 'ACTIVE']:
+                norm_status = 'Open'
+            elif 'PROGRESS' in status_raw.upper() or 'HOLD' in status_raw.upper():
+                norm_status = 'In Progress'
+            else:
+                norm_status = status_raw.title()
+
+            severity_raw = str(clean_val(r[col_severity]) if col_severity is not None and col_severity < len(r) else 'Minor').strip().title()
+            if severity_raw not in ['Critical', 'Major', 'Minor']:
+                if 'CRIT' in severity_raw.upper():
+                    severity_raw = 'Critical'
+                elif 'MAJ' in severity_raw.upper():
+                    severity_raw = 'Major'
+                else:
+                    severity_raw = 'Minor'
+
+            # TAT Compliance
+            tat_clean = clean_val(r[col_tat]) if col_tat is not None and col_tat < len(r) else None
+            tat_raw = str(tat_clean).strip().upper() if tat_clean is not None else ''
+
+            # Numerical TAT Days & Age
+            raw_tat_days = r[col_tatdays] if col_tatdays is not None and col_tatdays < len(r) else None
+            try:
+                tat_days = float(raw_tat_days) if raw_tat_days is not None and not pd.isna(raw_tat_days) else None
+            except Exception:
+                tat_days = None
+
+            raw_age = r[col_age] if col_age is not None and col_age < len(r) else None
+            try:
+                age_days = float(raw_age) if raw_age is not None and not pd.isna(raw_age) else None
+                if age_days is not None and age_days < 0:
+                    age_days = abs(age_days)
+            except Exception:
+                age_days = None
+
+            # Resolution calculation if dates exist
+            res_duration = None
+            if issue_date is not None and resolution_date is not None:
+                diff_days = (resolution_date - issue_date).total_seconds() / 86400.0
+                res_duration = max(0.0, round(diff_days, 1))
 
             records.append({
-                'ocppId': ocpp_val,
-                'zme': zme_val,
-                'zone': zone_val,
-                'stationId': station_id_val,
-                'stationName': station_name_val,
-                'segment': segment_val,
-                'stationStatus': stn_status_val,
-                'status': st_clean,
-                'scheduleWeek': b.get('scheduleValue'),
-                'scheduleWeekYear': b.get('scheduleWeekYear'),
-                'weekStartDate': week_start,
-                'weekEndDate': week_end,
+                'issueId': str(issue_id),
+                'ocppId': str(clean_val(r[col_ocpp]) if col_ocpp is not None and col_ocpp < len(r) else 'N/A'),
+                'jiraTicket': str(clean_val(r[col_jira]) if col_jira is not None and col_jira < len(r) else '—'),
+                'severity': severity_raw,
+                'issueDate': issue_date,
+                'status': norm_status,
+                'issueType': str(clean_val(r[col_type]) if col_type is not None and col_type < len(r) else 'General').replace('_', ' ').strip(),
+                'issueSubType': str(clean_val(r[col_subtype]) if col_subtype is not None and col_subtype < len(r) else 'General').replace('_', ' ').strip(),
+                'description': str(clean_val(r[col_desc]) if col_desc is not None and col_desc < len(r) else 'No description provided'),
+                'resolutionDate': resolution_date,
+                'restorationDate': restoration_date,
+                'correctiveAction': str(clean_val(r[col_action]) if col_action is not None and col_action < len(r) else '—'),
+                'remarks': str(clean_val(r[col_remarks]) if col_remarks is not None and col_remarks < len(r) else '—'),
+                'state': str(clean_val(r[col_state]) if col_state is not None and col_state < len(r) else 'Unknown'),
+                'zone': str(clean_val(r[col_zone]) if col_zone is not None and col_zone < len(r) else 'Unknown'),
+                'segment': str(clean_val(r[col_segment]) if col_segment is not None and col_segment < len(r) else 'B2C'),
+                'zme': str(clean_val(r[col_zme]) if col_zme is not None and col_zme < len(r) else 'Unassigned'),
+                'managerName': str(clean_val(r[col_manager]) if col_manager is not None and col_manager < len(r) else 'Unassigned'),
+                'dependency': str(clean_val(r[col_dep]) if col_dep is not None and col_dep < len(r) else 'Internal'),
+                'stationId': str(clean_val(r[col_stationid]) if col_stationid is not None and col_stationid < len(r) else 'N/A'),
+                'stationName': str(clean_val(r[col_stationname]) if col_stationname is not None and col_stationname < len(r) else 'N/A'),
+                'tatDays': tat_days,
+                'tdoc': tdoc_date,
+                'reportFilling': str(clean_val(r[col_report]) if col_report is not None and col_report < len(r) else 'Not Required'),
+                'ageOfIssue': age_days,
+                'month': mlabel,
+                'scheduleWeek': schedule_week,
+                'weekStartDate': start_dt,
+                'weekEndDate': end_dt,
                 'scheduleWeekRange': week_range,
-                'dueDate': due_date,
-                'completionDate': completion,
-                'quarterlyCompliance': quarterly_compliance,
-                'fy': fy, 'quarter': qnum, 'quarterLabel': qlabel, 'month': mlabel,
-                'Is_PM_Planned': is_planned,
-                'Is_PM_Done': is_done,
-                'Is_PM_Pending': is_pending,
-                'Advance PM Done': adv_done,
-                'PM Compliance Status': pm_compliance,
+                'tatCompliance': tat_raw,
+                'chargerMake': str(clean_val(r[col_make]) if col_make is not None and col_make < len(r) else 'Unknown').strip(),
+                'resolutionDurationDays': res_duration,
             })
 
-    df = pd.DataFrame(records)
-    if not df.empty:
-        df['zme'] = df['zme'].fillna('Unassigned')
-        df['zone'] = df['zone'].fillna('Unknown')
+        df = pd.DataFrame(records)
+        if df.empty:
+            return df
 
-        if 'scheduleWeekRange' in df.columns:
-            df['Scheduled Week Range'] = df['scheduleWeekRange'].fillna('Unscheduled')
-        else:
-            df['Scheduled Week Range'] = 'Unscheduled'
+        # Normalized derived Boolean flags
+        status_upper = df['status'].astype(str).str.strip().str.upper()
+        df['_Is_Closed_'] = status_upper.isin(['CLOSED', 'RESOLVED', 'COMPLETE'])
+        df['_Is_Open_'] = ~df['_Is_Closed_']
 
-        # Add Period Date helper columns for date/month/quarter/year breakdown
-        if 'dueDate' in df.columns and df['dueDate'].notna().any():
-            df['Scheduled Month'] = df['dueDate'].dt.strftime('%b-%Y').fillna('Unscheduled')
-            df['Scheduled Quarter'] = ('Q' + df['dueDate'].dt.quarter.astype(str)).fillna('Unscheduled')
-            df['Scheduled Year'] = df['dueDate'].dt.year.astype(str).fillna('Unscheduled')
-            df['Scheduled Date'] = df['dueDate'].dt.strftime('%Y-%m-%d').fillna('Unscheduled')
-        else:
-            df['Scheduled Month'] = 'Unscheduled'
-            df['Scheduled Quarter'] = 'Unscheduled'
-            df['Scheduled Year'] = 'Unscheduled'
-            df['Scheduled Date'] = 'Unscheduled'
+        tat_upper = df['tatCompliance'].astype(str).str.strip().str.upper()
+        df['_Is_Within_'] = (tat_upper == 'YES') | ((df['_Is_Closed_']) & (df['resolutionDurationDays'].notna()) & (df['tatDays'].notna()) & (df['resolutionDurationDays'] <= df['tatDays']))
+        df['_Is_Without_'] = (tat_upper == 'NO') | ((df['_Is_Closed_']) & (df['resolutionDurationDays'].notna()) & (df['tatDays'].notna()) & (df['resolutionDurationDays'] > df['tatDays']))
 
-    return df
+        # Adjust for unresolved tickets
+        df['_Is_Closed_Within_'] = df['_Is_Closed_'] & df['_Is_Within_']
+        df['_Is_Closed_Without_'] = df['_Is_Closed_'] & (~df['_Is_Within_'])
+
+        # Overdue Open Tickets
+        now_ts = pd.Timestamp.now()
+        df['_Is_Overdue_'] = df['_Is_Open_'] & (
+            (df['tdoc'].notna() & (df['tdoc'] < now_ts)) |
+            (df['tatDays'].notna() & df['ageOfIssue'].notna() & (df['ageOfIssue'] > df['tatDays']))
+        )
+
+        return df
+
+    finally:
+        if should_close:
+            wb.close()
 
 
 @st.cache_data(show_spinner=False)
-def load_workbook_data(file_bytes_or_dict):
-    issue_df = pd.DataFrame()
-    pm_df = pd.DataFrame()
-
-    if isinstance(file_bytes_or_dict, dict):
-        issue_bytes = file_bytes_or_dict.get('issue')
-        pm_bytes = file_bytes_or_dict.get('pm')
-
-        if issue_bytes:
-            wb_i = openpyxl.load_workbook(BytesIO(issue_bytes), read_only=True, data_only=True)
-            try:
-                issue_df = parse_issue_tracker(wb_i)
-                pm_df = parse_pm_tracker(wb_i)
-            finally:
-                wb_i.close()
-
-        if pm_bytes and (pm_df.empty or issue_df.empty):
-            wb_p = openpyxl.load_workbook(BytesIO(pm_bytes), read_only=True, data_only=True)
-            try:
-                if pm_df.empty:
-                    pm_df = parse_pm_tracker(wb_p)
-                if issue_df.empty:
-                    issue_df = parse_issue_tracker(wb_p)
-            finally:
-                wb_p.close()
-
-        return issue_df, pm_df
-    else:
-        wb = openpyxl.load_workbook(BytesIO(file_bytes_or_dict), read_only=True, data_only=True)
-        try:
-            issue_df = parse_issue_tracker(wb)
-            pm_df = parse_pm_tracker(wb)
-        finally:
-            wb.close()
-        return issue_df, pm_df
+def load_issue_data(uploaded_bytes=None):
+    """Load Issue Tracker strictly from user uploaded bytes."""
+    if uploaded_bytes is not None:
+        return parse_issue_tracker(uploaded_bytes)
+    return pd.DataFrame()
 
 
+# ─── Aggregations & Analytical Tables ─────────────────────────────────────────
 
-def quarter_sort_key(fy, q):
-    try:
-        return (2000 + int(fy[2:4])) * 10 + int(q)
-    except Exception:
-        return 20250
+def get_available_months(issue_df):
+    """Return chronologically ordered list of available months."""
+    if issue_df.empty or 'month' not in issue_df.columns:
+        return []
 
-def build_quarters(issue_df, pm_df):
-    dfs = []
-    if not issue_df.empty and 'fy' in issue_df.columns:
-        dfs.append(issue_df[['fy', 'quarter', 'quarterLabel']])
-    if not pm_df.empty and 'fy' in pm_df.columns:
-        dfs.append(pm_df[['fy', 'quarter', 'quarterLabel']])
+    if 'issueDate' in issue_df.columns:
+        valid_df = issue_df[issue_df['issueDate'].notna()]
+        if not valid_df.empty:
+            sorted_months = valid_df.sort_values('issueDate')['month'].unique().tolist()
+            for m in issue_df['month'].unique().tolist():
+                if m and m != 'Unscheduled' and m not in sorted_months:
+                    sorted_months.append(m)
+            return [m for m in sorted_months if m and m != 'Unscheduled']
 
-    if not dfs:
-        return {'All Quarters': []}
+    return [m for m in issue_df['month'].unique().tolist() if m and m != 'Unscheduled']
 
-    combo = pd.concat(dfs).drop_duplicates()
-    combo['sort_key'] = combo.apply(lambda r: quarter_sort_key(r['fy'], r['quarter']), axis=1)
-    combo = combo.sort_values('sort_key')
-    
-    quarters = {}
-    all_months_set = []
 
-    for label in combo['quarterLabel']:
-        m_list = []
-        if not pm_df.empty and 'quarterLabel' in pm_df.columns and 'month' in pm_df.columns:
-            pm_sub = pm_df[pm_df['quarterLabel'] == label]
-            if 'dueDate' in pm_sub.columns:
-                m_sub = pm_sub[['month', 'dueDate']].drop_duplicates().sort_values('dueDate')
-                m_list = m_sub['month'].tolist()
-            else:
-                m_list = pm_sub['month'].unique().tolist()
-                
-        if not issue_df.empty and 'quarterLabel' in issue_df.columns:
-            i_m_list = issue_df[issue_df['quarterLabel'] == label]['month'].unique().tolist()
-            for m in i_m_list:
-                if m not in m_list:
-                    m_list.append(m)
-
-        quarters[label] = m_list
-        for m in m_list:
-            if m not in all_months_set:
-                all_months_set.append(m)
-
-    res_quarters = {'All Quarters': all_months_set}
-    res_quarters.update(quarters)
-    return res_quarters
-
-# Aggregation & Math Engine
-
-def compute_zme_issue_table(issue_df, selected_months):
+def compute_zme_issue_table(issue_df, selected_months=None, selected_zones=None):
     if issue_df.empty:
         return pd.DataFrame()
-    issues = issue_df[issue_df['month'].isin(selected_months)] if selected_months else issue_df
-    if issues.empty:
+
+    df = issue_df.copy()
+    if selected_months:
+        df = df[df['month'].isin(selected_months)]
+    if selected_zones and 'All' not in selected_zones:
+        df = df[df['zone'].isin(selected_zones)]
+
+    if df.empty:
         return pd.DataFrame()
 
-    agg = issues.groupby(['zone', 'zme']).agg(
-        total=('zme', 'size'),
+    agg = df.groupby(['zme', 'zone']).agg(
+        total=('issueId', 'count'),
         open=('_Is_Open_', 'sum'),
         closed=('_Is_Closed_', 'sum'),
         within=('_Is_Closed_Within_', 'sum'),
         outside=('_Is_Closed_Without_', 'sum'),
+        overdue=('_Is_Overdue_', 'sum'),
+        critical=('severity', lambda s: (s == 'Critical').sum()),
     ).reset_index()
 
-    # Formulas from Executive Model:
-    # 1. Overall CM Efficiency % = Closed Faults / Faults Registered * 100
-    # 2. CM-TAT Efficiency % = Closed Within TAT / Total Closed Faults * 100
-    agg['cm_efficiency'] = (agg['closed'] / agg['total']).fillna(0.0) * 100
-    agg['tat_efficiency'] = (agg['within'] / agg['total']).fillna(0.0) * 100
+    agg['cm_efficiency'] = (agg['closed'] / agg['total'].replace(0, pd.NA) * 100).fillna(0.0).round(1)
+    agg['tat_efficiency'] = (agg['within'] / agg['total'].replace(0, pd.NA) * 100).fillna(0.0).round(1)
     return agg.sort_values(by='total', ascending=False)
 
 
-def compute_zme_pm_table(pm_df, selected_months):
-    if pm_df.empty:
-        return pd.DataFrame()
-    pm = pm_df[pm_df['month'].isin(selected_months)] if selected_months else pm_df
-    if pm.empty:
+def compute_zone_issue_table(issue_df, selected_months=None):
+    if issue_df.empty or 'zone' not in issue_df.columns:
         return pd.DataFrame()
 
-    agg = pm.groupby(['zone', 'zme']).agg(
-        total_chargers=('ocppId', 'count'),
-        total_stations=('stationId', 'nunique'),
-        planning=('Is_PM_Planned', 'sum'),
-        done=('Is_PM_Done', 'sum'),
-        pending=('Is_PM_Pending', 'sum'),
-        advance=('Advance PM Done', 'sum'),
+    df = issue_df.copy()
+    if selected_months:
+        df = df[df['month'].isin(selected_months)]
+
+    if df.empty:
+        return pd.DataFrame()
+
+    agg = df.groupby('zone').agg(
+        total=('issueId', 'count'),
+        open=('_Is_Open_', 'sum'),
+        closed=('_Is_Closed_', 'sum'),
+        within=('_Is_Closed_Within_', 'sum'),
+        outside=('_Is_Closed_Without_', 'sum'),
+        overdue=('_Is_Overdue_', 'sum'),
+        zme_count=('zme', 'nunique'),
+        station_count=('stationId', 'nunique')
     ).reset_index()
 
-    # Formula: PM Efficiency % = PM Done / PM Planning * 100
-    agg['pm_efficiency'] = (agg['done'] / agg['planning'].replace(0, pd.NA)).fillna(0.0) * 100
-    return agg.sort_values(by='planning', ascending=False)
+    agg['cm_efficiency'] = (agg['closed'] / agg['total'].replace(0, pd.NA) * 100).fillna(0.0).round(1)
+    agg['tat_efficiency'] = (agg['within'] / agg['total'].replace(0, pd.NA) * 100).fillna(0.0).round(1)
+    return agg.sort_values(by='total', ascending=False)
 
 
-def compute_week_range_pm_table(pm_df, selected_months):
-    if pm_df.empty:
-        return pd.DataFrame()
-    pm = pm_df[pm_df['month'].isin(selected_months)] if selected_months else pm_df
-    if pm.empty or 'scheduleWeekRange' not in pm.columns:
-        return pd.DataFrame()
+def compute_top_repetitive_faults(issue_df, top_overall=10, top_station=20):
+    """Compute Top N Overall and Top N Station-wise Repetitive Faults."""
+    if issue_df.empty:
+        return pd.DataFrame(), pd.DataFrame()
 
-    group_cols = ['scheduleWeekRange']
-    if 'weekStartDate' in pm.columns:
-        group_cols.append('weekStartDate')
+    # 1. Top Overall Repetitive Faults
+    overall_agg = issue_df.groupby(['issueType', 'issueSubType']).agg(
+        total_count=('issueId', 'count'),
+        unique_stations=('stationName', lambda s: s[s != 'N/A'].nunique()),
+        unique_chargers=('ocppId', lambda c: c[c != 'N/A'].nunique()),
+        open_count=('_Is_Open_', 'sum'),
+        closed_count=('_Is_Closed_', 'sum'),
+        within_tat=('_Is_Closed_Within_', 'sum'),
+        breached_tat=('_Is_Closed_Without_', 'sum'),
+        critical_count=('severity', lambda s: (s == 'Critical').sum()),
+        major_count=('severity', lambda s: (s == 'Major').sum())
+    ).reset_index().sort_values('total_count', ascending=False)
 
-    agg = pm.groupby(group_cols, dropna=False).agg(
-        total_chargers=('ocppId', 'count'),
-        total_stations=('stationId', 'nunique'),
-        planning=('Is_PM_Planned', 'sum'),
-        done=('Is_PM_Done', 'sum'),
-        pending=('Is_PM_Pending', 'sum'),
-        advance=('Advance PM Done', 'sum'),
-    ).reset_index()
+    overall_agg['tat_efficiency'] = (overall_agg['within_tat'] / overall_agg['total_count'].replace(0, pd.NA) * 100).fillna(0.0).round(1)
+    overall_agg['fault_label'] = overall_agg['issueType'] + ' — ' + overall_agg['issueSubType']
+    top10_df = overall_agg.head(top_overall)
 
-    agg['pm_efficiency'] = (agg['done'] / agg['planning'].replace(0, pd.NA)).fillna(0.0) * 100
-    if 'weekStartDate' in agg.columns:
-        agg = agg.sort_values(by='weekStartDate', ascending=True)
-    return agg
+    # 2. Top Repetitive Faults by Stations
+    st_valid = issue_df[issue_df['stationName'] != 'N/A'].copy()
+    if not st_valid.empty:
+        station_agg = st_valid.groupby(['stationName', 'zone', 'zme', 'issueType', 'issueSubType']).agg(
+            fault_count=('issueId', 'count'),
+            open_count=('_Is_Open_', 'sum'),
+            closed_count=('_Is_Closed_', 'sum'),
+            within_tat=('_Is_Closed_Within_', 'sum'),
+            breached_tat=('_Is_Closed_Without_', 'sum'),
+            unique_chargers=('ocppId', lambda c: c[c != 'N/A'].nunique())
+        ).reset_index().sort_values('fault_count', ascending=False)
 
+        station_agg['tat_efficiency'] = (station_agg['within_tat'] / station_agg['fault_count'].replace(0, pd.NA) * 100).fillna(0.0).round(1)
+        station_agg['station_fault_label'] = station_agg['stationName'].apply(lambda s: str(s)[:28] + '...' if len(str(s)) > 28 else str(s)) + ' | ' + station_agg['issueSubType']
+        top20_station_df = station_agg.head(top_station)
+    else:
+        top20_station_df = pd.DataFrame()
+
+    return top10_df, top20_station_df
+
+
+# ─── Excel Multi-Tab Report Generator ─────────────────────────────────────────
 
 @st.cache_data(show_spinner=False)
-def generate_mpr_excel_report(issue_df, pm_df, selected_months):
+def generate_issue_excel_report(filtered_df, full_df, months_list, active_filters_info=None):
+    """Generate executive multi-tab Excel workbook with embedded native Excel charts according to active filters."""
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        kpi_summary = []
-        if not issue_df.empty and selected_months:
-            sel_i = issue_df[issue_df['month'].isin(selected_months)]
-            tot_i = len(sel_i)
-            open_i = int(sel_i['_Is_Open_'].sum()) if not sel_i.empty else 0
-            closed_i = int(sel_i['_Is_Closed_'].sum()) if not sel_i.empty else 0
-            within_tat = int(sel_i['_Is_Closed_Within_'].sum()) if not sel_i.empty else 0
-            cm_eff = (closed_i / tot_i * 100) if tot_i > 0 else 0.0
-            tat_eff = (within_tat / tot_i * 100) if tot_i > 0 else 0.0
-            kpi_summary.extend([
-                {'Metric Category': 'Issue SLA Governance', 'Metric Name': 'Faults Registered', 'Value': tot_i},
-                {'Metric Category': 'Issue SLA Governance', 'Metric Name': 'Open Faults', 'Value': open_i},
-                {'Metric Category': 'Issue SLA Governance', 'Metric Name': 'Closed Faults', 'Value': closed_i},
-                {'Metric Category': 'Issue SLA Governance', 'Metric Name': 'Closed Within TAT', 'Value': within_tat},
-                {'Metric Category': 'Issue SLA Governance', 'Metric Name': 'Overall CM Efficiency %', 'Value': f"{cm_eff:.2f}%"},
-                {'Metric Category': 'Issue SLA Governance', 'Metric Name': 'CM-TAT Efficiency %', 'Value': f"{tat_eff:.2f}%"},
-            ])
+        # Sheet 1: Executive KPI Summary
+        tot = len(filtered_df)
+        open_cnt = int(filtered_df['_Is_Open_'].sum()) if not filtered_df.empty else 0
+        closed_cnt = int(filtered_df['_Is_Closed_'].sum()) if not filtered_df.empty else 0
+        within_tat = int(filtered_df['_Is_Closed_Within_'].sum()) if not filtered_df.empty else 0
+        outside_tat = int(filtered_df['_Is_Closed_Without_'].sum()) if not filtered_df.empty else 0
+        overdue_cnt = int(filtered_df['_Is_Overdue_'].sum()) if not filtered_df.empty else 0
+        crit_cnt = int((filtered_df['severity'] == 'Critical').sum()) if not filtered_df.empty else 0
+        maj_cnt = int((filtered_df['severity'] == 'Major').sum()) if not filtered_df.empty else 0
 
-        if not pm_df.empty and selected_months:
-            sel_p = pm_df[pm_df['month'].isin(selected_months)]
-            planned_p = int(sel_p['Is_PM_Planned'].sum()) if not sel_p.empty else 0
-            done_p = int(sel_p['Is_PM_Done'].sum()) if not sel_p.empty else 0
-            pending_p = int(sel_p['Is_PM_Pending'].sum()) if not sel_p.empty else 0
-            adv_p = int(sel_p['Advance PM Done'].sum()) if not sel_p.empty else 0
-            pm_eff = (done_p / planned_p * 100) if planned_p > 0 else 0.0
-            kpi_summary.extend([
-                {'Metric Category': 'PM Governance', 'Metric Name': 'PM Planning (Scheduled)', 'Value': planned_p},
-                {'Metric Category': 'PM Governance', 'Metric Name': 'PM Done (Completed)', 'Value': done_p},
-                {'Metric Category': 'PM Governance', 'Metric Name': 'PM Pending', 'Value': pending_p},
-                {'Metric Category': 'PM Governance', 'Metric Name': 'Advance PM Done', 'Value': adv_p},
-                {'Metric Category': 'PM Governance', 'Metric Name': 'PM Efficiency %', 'Value': f"{pm_eff:.1f}%"},
-            ])
+        cm_eff = (closed_cnt / tot * 100) if tot > 0 else 0.0
+        tat_eff = (within_tat / tot * 100) if tot > 0 else 0.0
 
-        if kpi_summary:
-            pd.DataFrame(kpi_summary).to_excel(writer, sheet_name='Executive Summary', index=False)
+        period_str = ', '.join(months_list) if months_list else 'All Recorded Months'
+        if active_filters_info and isinstance(active_filters_info, dict):
+            filter_summary_str = f"Months: {period_str} | Zones: {active_filters_info.get('zones', 'All')} | Severity: {active_filters_info.get('severity', 'All')} | Make: {active_filters_info.get('make', 'All')}"
+        else:
+            filter_summary_str = period_str
 
-        if not issue_df.empty and selected_months:
-            sel_issues = issue_df[issue_df['month'].isin(selected_months)]
-            if not sel_issues.empty:
-                cols_clean = [c for c in sel_issues.columns if not c.startswith('_')]
-                sel_issues[cols_clean].to_excel(writer, sheet_name='Issue Tracker', index=False)
+        kpi_summary = [
+            {'Parameter': 'Active Filter Criteria / Scope', 'Metric Value': filter_summary_str},
+            {'Parameter': 'Total Faults Registered', 'Metric Value': tot},
+            {'Parameter': 'Active / Open Faults', 'Metric Value': open_cnt},
+            {'Parameter': 'Resolved / Closed Faults', 'Metric Value': closed_cnt},
+            {'Parameter': 'Closed Within TAT (SLA Compliant)', 'Metric Value': within_tat},
+            {'Parameter': 'Closed Without TAT (SLA Breached)', 'Metric Value': outside_tat},
+            {'Parameter': 'Active Overdue Tickets', 'Metric Value': overdue_cnt},
+            {'Parameter': 'Critical Severity Faults', 'Metric Value': crit_cnt},
+            {'Parameter': 'Major Severity Faults', 'Metric Value': maj_cnt},
+            {'Parameter': 'Overall CM Efficiency %', 'Metric Value': f"{cm_eff:.2f}%"},
+            {'Parameter': 'CM-TAT Efficiency %', 'Metric Value': f"{tat_eff:.2f}%"},
+        ]
+        pd.DataFrame(kpi_summary).to_excel(writer, sheet_name='Executive Summary', index=False)
+        ws_exec = writer.sheets['Executive Summary']
 
-        if not pm_df.empty and selected_months:
-            sel_pm = pm_df[pm_df['month'].isin(selected_months)]
-            if not sel_pm.empty:
-                pm_planned = sel_pm[sel_pm['Is_PM_Planned']]
-                if not pm_planned.empty:
-                    cols_p = ['ocppId', 'zme', 'zone', 'stationId', 'stationName', 'dueDate', 'month', 'PM Compliance Status']
-                    pm_planned[[c for c in cols_p if c in pm_planned.columns]].to_excel(writer, sheet_name='PM Planned', index=False)
+        # SLA Breakdown Chart Reference Data on Executive Summary Sheet
+        ws_exec.cell(row=14, column=1, value="SLA Status Category")
+        ws_exec.cell(row=14, column=2, value="Incident Volume")
+        ws_exec.cell(row=15, column=1, value="Closed Within TAT")
+        ws_exec.cell(row=15, column=2, value=within_tat)
+        ws_exec.cell(row=16, column=1, value="Closed Breached TAT")
+        ws_exec.cell(row=16, column=2, value=outside_tat)
+        ws_exec.cell(row=17, column=1, value="Active Open")
+        ws_exec.cell(row=17, column=2, value=open_cnt)
 
-                pm_done = sel_pm[sel_pm['Is_PM_Done']]
-                if not pm_done.empty:
-                    cols_d = ['ocppId', 'zme', 'zone', 'stationId', 'stationName', 'status', 'completionDate', 'month', 'PM Compliance Status']
-                    pm_done[[c for c in cols_d if c in pm_done.columns]].to_excel(writer, sheet_name='PM Done', index=False)
+        # Embedded Native Excel PieChart on Executive Summary
+        pie_exec = PieChart()
+        pie_exec.title = "Executive SLA Compliance Breakdown"
+        pie_exec.width = 16
+        pie_exec.height = 10
+        data_exec_pie = Reference(ws_exec, min_col=2, min_row=14, max_row=17)
+        labels_exec_pie = Reference(ws_exec, min_col=1, min_row=15, max_row=17)
+        pie_exec.add_data(data_exec_pie, titles_from_data=True)
+        pie_exec.set_categories(labels_exec_pie)
+        ws_exec.add_chart(pie_exec, "D2")
 
-                pm_pending = sel_pm[sel_pm['Is_PM_Pending']]
-                if not pm_pending.empty:
-                    cols_pend = ['ocppId', 'zme', 'zone', 'stationId', 'stationName', 'status', 'dueDate', 'month', 'PM Compliance Status']
-                    pm_pending[[c for c in cols_pend if c in pm_pending.columns]].to_excel(writer, sheet_name='PM Pending', index=False)
+        # Sheet 2: Repetitive Faults Analysis
+        top10_rep, top20_st_rep = compute_top_repetitive_faults(filtered_df, top_overall=10, top_station=20)
+        if not top10_rep.empty:
+            top10_disp = top10_rep.rename(columns={
+                'issueType': 'Category',
+                'issueSubType': 'Fault Sub-Type',
+                'total_count': 'Total Incidents',
+                'unique_stations': 'Impacted Sites',
+                'unique_chargers': 'Impacted Chargers',
+                'open_count': 'Open Incidents',
+                'closed_count': 'Closed Incidents',
+                'within_tat': 'Closed Within TAT',
+                'breached_tat': 'Breached TAT',
+                'tat_efficiency': 'SLA Adherence %'
+            })
+            top10_disp.drop(columns=['fault_label'], errors='ignore').to_excel(writer, sheet_name='Top 10 Overall Faults', index=False)
+            ws_t10 = writer.sheets['Top 10 Overall Faults']
 
-                pm_adv = sel_pm[sel_pm['Advance PM Done']]
-                if not pm_adv.empty:
-                    cols_adv = ['ocppId', 'zme', 'zone', 'stationId', 'stationName', 'status', 'completionDate', 'month', 'PM Compliance Status']
-                    pm_adv[[c for c in cols_adv if c in pm_adv.columns]].to_excel(writer, sheet_name='Advance PM Done', index=False)
+            # Embedded Native Stacked BarChart on Top 10 Sheet
+            chart_t10 = BarChart()
+            chart_t10.type = "bar"
+            chart_t10.grouping = "stacked"
+            chart_t10.overlap = 100
+            chart_t10.title = "Top 10 Repetitive Fault Patterns & SLA Compliance"
+            chart_t10.width = 18
+            chart_t10.height = 12
+            chart_t10.x_axis.title = "Incident Volume"
+            chart_t10.y_axis.title = "Fault Sub-Type"
+            # Cols in top10_disp: 1:Category, 2:Fault Sub-Type, 3:Total Incidents, 4:Impacted Sites, 5:Impacted Chargers, 6:Open Incidents, 7:Closed Incidents, 8:Closed Within TAT, 9:Breached TAT, 10:SLA Adherence %
+            data_t10 = Reference(ws_t10, min_col=8, max_col=9, min_row=1, max_row=len(top10_disp) + 1)
+            cats_t10 = Reference(ws_t10, min_col=2, min_row=2, max_row=len(top10_disp) + 1)
+            chart_t10.add_data(data_t10, titles_from_data=True)
+            chart_t10.set_categories(cats_t10)
+            ws_t10.add_chart(chart_t10, "L2")
 
-                zme_summary = compute_zme_pm_table(pm_df, selected_months)
-                if not zme_summary.empty:
-                    zme_summary.to_excel(writer, sheet_name='ZME PM Summary', index=False)
+        if not top20_st_rep.empty:
+            top20_disp = top20_st_rep.rename(columns={
+                'stationName': 'Station Name',
+                'zone': 'Zone',
+                'zme': 'Assigned ZME',
+                'issueType': 'Category',
+                'issueSubType': 'Fault Sub-Type',
+                'fault_count': 'Fault Count at Site',
+                'open_count': 'Open Incidents',
+                'closed_count': 'Closed Incidents',
+                'within_tat': 'Closed Within TAT',
+                'breached_tat': 'Breached TAT',
+                'tat_efficiency': 'Station SLA %'
+            })
+            top20_disp.drop(columns=['station_fault_label'], errors='ignore').to_excel(writer, sheet_name='Top 20 Station Faults', index=False)
+            ws_t20 = writer.sheets['Top 20 Station Faults']
+
+            # Embedded Native Stacked BarChart on Top 20 Sheet
+            chart_t20 = BarChart()
+            chart_t20.type = "bar"
+            chart_t20.grouping = "stacked"
+            chart_t20.overlap = 100
+            chart_t20.title = "Top Station Incident Hotspots"
+            chart_t20.width = 18
+            chart_t20.height = 14
+            chart_t20.x_axis.title = "Fault Count at Site"
+            chart_t20.y_axis.title = "Station Name"
+            # Cols in top20_disp: 1:Station Name, 2:Zone, 3:ZME, 4:Cat, 5:Sub, 6:Fault Count, 7:Open, 8:Closed, 9:Within TAT, 10:Breached TAT, 11:Station SLA %
+            data_t20 = Reference(ws_t20, min_col=9, max_col=10, min_row=1, max_row=len(top20_disp) + 1)
+            cats_t20 = Reference(ws_t20, min_col=1, min_row=2, max_row=len(top20_disp) + 1)
+            chart_t20.add_data(data_t20, titles_from_data=True)
+            chart_t20.set_categories(cats_t20)
+            ws_t20.add_chart(chart_t20, "M2")
+
+        # Sheet 3: ZME Scorecard
+        zme_table = compute_zme_issue_table(filtered_df)
+        if not zme_table.empty:
+            zme_disp = zme_table.rename(columns={
+                'zme': 'ZME Engineer',
+                'zone': 'Zone',
+                'total': 'Registered Faults',
+                'open': 'Open Faults',
+                'closed': 'Closed Faults',
+                'within': 'Closed Within TAT',
+                'outside': 'Closed Without TAT',
+                'overdue': 'Overdue Open',
+                'critical': 'Critical Faults',
+                'cm_efficiency': 'CM Efficiency %',
+                'tat_efficiency': 'TAT SLA %'
+            })
+            zme_disp.to_excel(writer, sheet_name='ZME Scorecard', index=False)
+            ws_zme = writer.sheets['ZME Scorecard']
+
+            # Embedded Native BarChart on ZME Scorecard Sheet
+            chart_zme = BarChart()
+            chart_zme.type = "bar"
+            chart_zme.grouping = "stacked"
+            chart_zme.overlap = 100
+            chart_zme.title = "ZME Field Engineer SLA Performance"
+            chart_zme.width = 18
+            chart_zme.height = 12
+            chart_zme.x_axis.title = "Incident Volume"
+            chart_zme.y_axis.title = "ZME Engineer"
+            # Cols in zme_disp: 1:ZME, 2:Zone, 3:Registered, 4:Open, 5:Closed, 6:Within TAT, 7:Outside TAT, 8:Overdue, 9:Critical, 10:CM%, 11:SLA%
+            data_zme = Reference(ws_zme, min_col=6, max_col=7, min_row=1, max_row=len(zme_disp) + 1)
+            cats_zme = Reference(ws_zme, min_col=1, min_row=2, max_row=len(zme_disp) + 1)
+            chart_zme.add_data(data_zme, titles_from_data=True)
+            chart_zme.set_categories(cats_zme)
+            ws_zme.add_chart(chart_zme, "M2")
+
+        # Sheet 4: Zone Performance
+        zone_table = compute_zone_issue_table(filtered_df)
+        if not zone_table.empty:
+            zone_disp = zone_table.rename(columns={
+                'zone': 'Zone / Region',
+                'total': 'Total Faults',
+                'open': 'Open Faults',
+                'closed': 'Closed Faults',
+                'within': 'Closed Within TAT',
+                'outside': 'Closed Without TAT',
+                'overdue': 'Overdue Open',
+                'zme_count': 'ZME Count',
+                'station_count': 'Impacted Sites',
+                'cm_efficiency': 'CM Efficiency %',
+                'tat_efficiency': 'TAT SLA %'
+            })
+            zone_disp.to_excel(writer, sheet_name='Zone Performance', index=False)
+            ws_zone = writer.sheets['Zone Performance']
+
+            # Embedded Native Clustered BarChart on Zone Sheet
+            chart_zone = BarChart()
+            chart_zone.type = "col"
+            chart_zone.grouping = "clustered"
+            chart_zone.title = "Regional Zone Incident & SLA Performance"
+            chart_zone.width = 16
+            chart_zone.height = 10
+            chart_zone.y_axis.title = "Ticket Count"
+            chart_zone.x_axis.title = "Zone / Region"
+            # Cols in zone_disp: 1:Zone, 2:Total, 3:Open, 4:Closed, 5:Within TAT, 6:Outside TAT, 7:Overdue, 8:ZME Count, 9:Impacted Sites, 10:CM%, 11:SLA%
+            data_zone = Reference(ws_zone, min_col=2, max_col=5, min_row=1, max_row=len(zone_disp) + 1)
+            cats_zone = Reference(ws_zone, min_col=1, min_row=2, max_row=len(zone_disp) + 1)
+            chart_zone.add_data(data_zone, titles_from_data=True)
+            chart_zone.set_categories(cats_zone)
+            ws_zone.add_chart(chart_zone, "M2")
+
+        # Sheet 5: Filtered Issues Dataset
+        if not filtered_df.empty:
+            nice_cols = [
+                'issueId', 'ocppId', 'stationId', 'stationName', 'zone', 'state', 'zme',
+                'status', 'severity', 'issueType', 'issueSubType', 'issueDate', 'resolutionDate',
+                'tatDays', 'tatCompliance', 'ageOfIssue', 'chargerMake', 'segment', 'description', 'correctiveAction'
+            ]
+            export_cols = [c for c in nice_cols if c in filtered_df.columns]
+            filtered_df[export_cols].to_excel(writer, sheet_name='Filtered Issue Records', index=False)
+
+        # Sheet 6: SLA Breached & Overdue
+        breached_df = filtered_df[filtered_df['_Is_Closed_Without_'] | filtered_df['_Is_Overdue_']]
+        if not breached_df.empty:
+            nice_cols = [
+                'issueId', 'ocppId', 'stationId', 'stationName', 'zone', 'state', 'zme',
+                'status', 'severity', 'issueType', 'issueSubType', 'issueDate', 'resolutionDate',
+                'tatDays', 'tatCompliance', 'ageOfIssue', 'chargerMake', 'segment', 'description', 'correctiveAction'
+            ]
+            export_cols_b = [c for c in nice_cols if c in breached_df.columns]
+            breached_df[export_cols_b].to_excel(writer, sheet_name='SLA Breached & Overdue', index=False)
 
     output.seek(0)
     return output.getvalue()
 
 
-# Plotly Charts
+# ─── Modern Plotly Chart Helpers ──────────────────────────────────────────────
 
-RED_PALETTE = ['#991B1B', '#DC2626', '#EF4444', '#F87171', '#FCA5A5', '#7F1D1D', '#B91C1C']
+def _modern_layout(title="", subtitle=None, height=360):
+    full_title = f"<b>{title}</b>"
+    if subtitle:
+        full_title += f"<br><span style='font-size:11px;color:#64748B;font-weight:500;'>{subtitle}</span>"
 
-def plot_interactive_bar(df, x_col, y_col, title, color_hex="#DC2626"):
-    fig = px.bar(
-        df, x=x_col, y=y_col, title=title, text=y_col,
-        color_discrete_sequence=[color_hex]
+    return dict(
+        title=dict(
+            text=full_title,
+            font=dict(size=14, color="#0F172A", family="Plus Jakarta Sans, Inter, sans-serif"),
+            x=0.01,
+            y=0.96
+        ),
+        margin=dict(l=24, r=24, t=60, b=24),
+        height=height,
+        font=dict(family="Inter, sans-serif", color="#334155"),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        hoverlabel=dict(
+            bgcolor="#FFFFFF",
+            font_size=12,
+            font_family="Inter, sans-serif",
+            bordercolor="#DC2626"
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.28,
+            xanchor="center",
+            x=0.5,
+            font=dict(size=11, family="Inter, sans-serif", color="#475569")
+        ),
+        yaxis=dict(
+            showgrid=True,
+            gridcolor="#F1F5F9",
+            zeroline=False,
+            tickfont=dict(size=11, color="#64748B")
+        ),
+        xaxis=dict(
+            showgrid=False,
+            zeroline=False,
+            tickfont=dict(size=11, color="#64748B")
+        )
     )
-    fig.update_traces(
-        texttemplate='%{text:,}', textposition='outside',
-        textfont=dict(size=12, family='Inter'),
-        hovertemplate='<b>%{x}</b><br>Count: <b>%{y:,}</b><extra></extra>'
-    )
-    fig.update_layout(
-        margin=dict(l=15, r=15, t=45, b=15), height=340,
-        font=dict(family='Inter', color='#0F172A'),
-        title=dict(font=dict(size=15, color='#991B1B', family='Inter', weight='bold')),
-        xaxis_title=x_col, yaxis_title=y_col,
-        plot_bgcolor='rgba(0,0,0,0)',
-        yaxis=dict(showgrid=True, gridcolor='#FEE2E2')
-    )
-    return fig
 
 
-def plot_grouped_bar(df, x_col, y_cols, title, colors=None):
+def plot_top10_overall_faults(df_top10):
+    """Plot horizontal stacked bar of top 10 overall repetitive faults."""
+    df_sorted = df_top10.sort_values('total_count', ascending=True).copy()
+
     fig = go.Figure()
-    palette = colors if colors else ['#991B1B', '#DC2626', '#EF4444', '#7F1D1D']
-    for idx, col in enumerate(y_cols):
-        fig.add_trace(go.Bar(
-            name=col, x=df[x_col], y=df[col],
-            marker_color=palette[idx % len(palette)],
-            text=df[col], textposition='auto',
-            textfont=dict(size=11, family='Inter'),
-            hovertemplate='<b>%{x}</b><br>' + col + ': <b>%{y:,}</b><extra></extra>'
-        ))
-    fig.update_layout(
-        barmode='group', hovermode='x unified',
-        title=dict(text=title, font=dict(size=15, color='#991B1B', family='Inter', weight='bold')),
-        margin=dict(l=15, r=15, t=45, b=15), height=340,
-        legend=dict(orientation="h", yanchor="bottom", y=-0.28, xanchor="center", x=0.5),
-        plot_bgcolor='rgba(0,0,0,0)',
-        yaxis=dict(showgrid=True, gridcolor='#FEE2E2')
+
+    fig.add_trace(go.Bar(
+        y=df_sorted['fault_label'],
+        x=df_sorted['within_tat'],
+        name='Closed Within TAT',
+        orientation='h',
+        marker=dict(color='#10B981', line=dict(color='#059669', width=1)),
+        hovertemplate='<b>%{y}</b><br>🟢 Closed Within TAT: <b>%{x:,}</b><extra></extra>'
+    ))
+
+    fig.add_trace(go.Bar(
+        y=df_sorted['fault_label'],
+        x=df_sorted['breached_tat'],
+        name='Closed Breached TAT',
+        orientation='h',
+        marker=dict(color='#EF4444', line=dict(color='#DC2626', width=1)),
+        hovertemplate='<b>%{y}</b><br>🔴 Closed Breached TAT: <b>%{x:,}</b><extra></extra>'
+    ))
+
+    fig.add_trace(go.Bar(
+        y=df_sorted['fault_label'],
+        x=df_sorted['open_count'],
+        name='Active Open',
+        orientation='h',
+        marker=dict(color='#F59E0B', line=dict(color='#D97706', width=1)),
+        hovertemplate='<b>%{y}</b><br>🟡 Active Open: <b>%{x:,}</b><extra></extra>'
+    ))
+
+    layout = _modern_layout(
+        title="🏆 Top 10 Overall Repetitive Faults (Network-Wide)",
+        subtitle="Ranked by incident frequency across all stations and equipment categories",
+        height=max(400, len(df_sorted) * 40)
     )
+    layout.update(dict(
+        barmode='stack',
+        xaxis=dict(title="Incident Volume", showgrid=True, gridcolor="#F1F5F9"),
+        yaxis=dict(title=None, showgrid=False, autorange=True)
+    ))
+    fig.update_layout(**layout)
     return fig
 
 
-def plot_donut_chart(labels, values, title, colors=None):
+def plot_top20_station_faults(df_top20):
+    """Plot horizontal stacked bar of top 20 repetitive faults by station."""
+    df_sorted = df_top20.sort_values('fault_count', ascending=True).copy()
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        y=df_sorted['station_fault_label'],
+        x=df_sorted['within_tat'],
+        name='Closed Within TAT',
+        orientation='h',
+        marker=dict(color='#10B981', line=dict(color='#059669', width=1)),
+        hovertemplate='<b>%{y}</b><br>🟢 Within TAT: <b>%{x:,}</b><extra></extra>'
+    ))
+
+    fig.add_trace(go.Bar(
+        y=df_sorted['station_fault_label'],
+        x=df_sorted['breached_tat'],
+        name='Breached TAT',
+        orientation='h',
+        marker=dict(color='#EF4444', line=dict(color='#DC2626', width=1)),
+        hovertemplate='<b>%{y}</b><br>🔴 Breached TAT: <b>%{x:,}</b><extra></extra>'
+    ))
+
+    fig.add_trace(go.Bar(
+        y=df_sorted['station_fault_label'],
+        x=df_sorted['open_count'],
+        name='Active Open',
+        orientation='h',
+        marker=dict(color='#F59E0B', line=dict(color='#D97706', width=1)),
+        hovertemplate='<b>%{y}</b><br>🟡 Active Open: <b>%{x:,}</b><extra></extra>'
+    ))
+
+    layout = _modern_layout(
+        title="📍 Top 20 Repetitive Faults by Stations (Station Hotspots)",
+        subtitle="Specific site and failure combinations experiencing high recurring incidents",
+        height=max(540, len(df_sorted) * 27)
+    )
+    layout.update(dict(
+        barmode='stack',
+        xaxis=dict(title="Incident Count at Site", showgrid=True, gridcolor="#F1F5F9"),
+        yaxis=dict(title=None, showgrid=False, autorange=True)
+    ))
+    fig.update_layout(**layout)
+    return fig
+
+
+def plot_zme_sla_leaderboard(zme_df, top_n=10):
+    """Plot horizontal interactive bar chart for top ZMEs with SLA compliance %."""
+    df_top = zme_df.head(top_n).copy().sort_values('total', ascending=True)
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        y=df_top['zme'],
+        x=df_top['within'],
+        name='Closed Within TAT',
+        orientation='h',
+        marker=dict(color='#10B981', line=dict(color='#059669', width=1)),
+        hovertemplate='<b>%{y}</b><br>🟢 Closed Within TAT: <b>%{x:,}</b><extra></extra>'
+    ))
+
+    fig.add_trace(go.Bar(
+        y=df_top['zme'],
+        x=df_top['outside'],
+        name='Closed Breached TAT',
+        orientation='h',
+        marker=dict(color='#EF4444', line=dict(color='#DC2626', width=1)),
+        hovertemplate='<b>%{y}</b><br>🔴 Closed Breached TAT: <b>%{x:,}</b><extra></extra>'
+    ))
+
+    fig.add_trace(go.Bar(
+        y=df_top['zme'],
+        x=df_top['open'],
+        name='Open / Pending',
+        orientation='h',
+        marker=dict(color='#F59E0B', line=dict(color='#D97706', width=1)),
+        hovertemplate='<b>%{y}</b><br>🟡 Open Tickets: <b>%{x:,}</b><extra></extra>'
+    ))
+
+    layout = _modern_layout(
+        title=f"Top {min(top_n, len(df_top))} ZME Performance & SLA Compliance Breakdown",
+        subtitle="Resolution status breakdown and SLA adherence by Field Engineer",
+        height=max(380, len(df_top) * 38)
+    )
+    layout.update(dict(
+        barmode='stack',
+        xaxis=dict(title=None, showgrid=True, gridcolor="#F1F5F9"),
+        yaxis=dict(title=None, showgrid=False, autorange=True)
+    ))
+    fig.update_layout(**layout)
+    return fig
+
+
+def plot_zone_efficiency_comparison(zone_df):
+    """Plot dual-axis comparative bar for Zone Performance & Resolution Rates."""
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    fig.add_trace(
+        go.Bar(
+            x=zone_df['zone'],
+            y=zone_df['total'],
+            name='Total Registered',
+            marker=dict(color='#991B1B', line=dict(color='#7F1D1D', width=1)),
+            text=zone_df['total'],
+            textposition='auto',
+            hovertemplate='<b>%{x}</b><br>Registered: <b>%{y:,}</b><extra></extra>'
+        ),
+        secondary_y=False
+    )
+
+    fig.add_trace(
+        go.Bar(
+            x=zone_df['zone'],
+            y=zone_df['within'],
+            name='Closed Within TAT',
+            marker=dict(color='#10B981', line=dict(color='#059669', width=1)),
+            text=zone_df['within'],
+            textposition='auto',
+            hovertemplate='<b>%{x}</b><br>Within TAT: <b>%{y:,}</b><extra></extra>'
+        ),
+        secondary_y=False
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=zone_df['zone'],
+            y=zone_df['tat_efficiency'],
+            name='SLA Compliance %',
+            mode='lines+markers+text',
+            line=dict(color='#2563EB', width=3, shape='spline'),
+            marker=dict(size=9, color='#2563EB', symbol='circle', line=dict(color='#FFFFFF', width=2)),
+            text=[f"{v:.2f}%" for v in zone_df['tat_efficiency']],
+            textposition='top center',
+            textfont=dict(size=11, color='#1E40AF', family="Inter, sans-serif"),
+            hovertemplate='<b>%{x}</b><br>⚡ SLA Compliance: <b>%{y:.2f}%</b><extra></extra>'
+        ),
+        secondary_y=True
+    )
+
+    layout = _modern_layout(
+        title="Zone Performance & SLA Compliance %",
+        subtitle="Regional fault volume vs SLA achievement percentage",
+        height=380
+    )
+    layout.update(dict(
+        barmode='group',
+        legend=dict(orientation="h", y=-0.25, x=0.5, xanchor="center")
+    ))
+    fig.update_layout(**layout)
+    fig.update_yaxes(title_text="Ticket Count", secondary_y=False, showgrid=True, gridcolor="#F1F5F9")
+    fig.update_yaxes(title_text="SLA %", secondary_y=True, range=[0, 115], showgrid=False)
+    return fig
+
+
+def plot_fault_trend_timeline(df):
+    """Plot monthly fault volume trend and closure rate with smooth splines."""
+    if df.empty or 'issueDate' not in df.columns:
+        return None
+
+    dt_df = df[df['issueDate'].notna()].copy()
+    if dt_df.empty:
+        return None
+
+    dt_df['Period'] = dt_df['issueDate'].dt.strftime('%b %Y')
+    dt_df['Period_Sort'] = dt_df['issueDate'].dt.to_period('M')
+
+    trend_agg = dt_df.groupby(['Period_Sort', 'Period']).agg(
+        Registered=('issueId', 'count'),
+        Within_TAT=('_Is_Closed_Within_', 'sum'),
+        Closed=('_Is_Closed_', 'sum'),
+        Breached=('_Is_Closed_Without_', 'sum')
+    ).reset_index().sort_values('Period_Sort')
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        x=trend_agg['Period'],
+        y=trend_agg['Registered'],
+        name='Faults Registered',
+        marker=dict(color='#CBD5E1', line=dict(color='#94A3B8', width=1)),
+        hovertemplate='<b>%{x}</b><br>Registered: <b>%{y:,}</b><extra></extra>'
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=trend_agg['Period'],
+        y=trend_agg['Within_TAT'],
+        name='Resolved Within TAT',
+        mode='lines+markers',
+        line=dict(color='#10B981', width=3.5, shape='spline'),
+        marker=dict(size=8, color='#10B981', line=dict(color='#FFFFFF', width=1.5)),
+        hovertemplate='<b>%{x}</b><br>🟢 Resolved Within TAT: <b>%{y:,}</b><extra></extra>'
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=trend_agg['Period'],
+        y=trend_agg['Breached'],
+        name='Resolved Breached TAT',
+        mode='lines+markers',
+        line=dict(color='#EF4444', width=2.5, dash='dot', shape='spline'),
+        marker=dict(size=7, color='#EF4444', line=dict(color='#FFFFFF', width=1.5)),
+        hovertemplate='<b>%{x}</b><br>🔴 Breached: <b>%{y:,}</b><extra></extra>'
+    ))
+
+    layout = _modern_layout(
+        title="Monthly Operational Fault Trend & Resolution Adherence",
+        subtitle="Timeline progression of incoming faults vs SLA-compliant closures",
+        height=360
+    )
+    layout.update(dict(
+        barmode='overlay',
+        xaxis=dict(title=None, showgrid=False),
+        yaxis=dict(title="Count", showgrid=True, gridcolor="#F1F5F9")
+    ))
+    fig.update_layout(**layout)
+    return fig
+
+
+def plot_donut_chart(labels, values, title, subtitle=None, colors=None, center_text=None):
+    """Render modern donut chart with custom center text."""
     fig = go.Figure(data=[go.Pie(
-        labels=labels, values=values, hole=0.45,
-        marker_colors=colors if colors else RED_PALETTE,
+        labels=labels,
+        values=values,
+        hole=0.64,
+        marker=dict(colors=colors if colors else PALETTE_VIBRANT, line=dict(color='#FFFFFF', width=2.5)),
         textinfo='percent+value',
+        textposition='outside',
         hovertemplate='<b>%{label}</b><br>Count: <b>%{value:,}</b> (%{percent})<extra></extra>',
-        insidetextfont=dict(color='#FFFFFF', size=12, family='Inter')
+        insidetextfont=dict(color='#FFFFFF', size=11, family='Inter, sans-serif')
     )])
-    fig.update_layout(
-        title=dict(text=title, font=dict(size=15, color='#991B1B', family='Inter', weight='bold')),
-        margin=dict(l=15, r=15, t=45, b=15), height=320,
+
+    layout = _modern_layout(title=title, subtitle=subtitle, height=340)
+    layout.update(dict(
         showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5)
-    )
+        legend=dict(orientation="h", yanchor="bottom", y=-0.30, xanchor="center", x=0.5)
+    ))
+    layout.pop('yaxis', None)
+    layout.pop('xaxis', None)
+
+    if center_text:
+        layout['annotations'] = [dict(
+            text=center_text,
+            x=0.5, y=0.5,
+            font_size=16,
+            font_family='Plus Jakarta Sans, Inter, sans-serif',
+            font_weight='bold',
+            font_color='#0F172A',
+            showarrow=False
+        )]
+
+    fig.update_layout(**layout)
     return fig
 
-# Main Application UI
 
-def main():
-    # Executive Red & White Theme CSS
+def plot_pareto_root_causes(df, top_n=8):
+    """Pareto chart of top issue categories and cumulative percentage."""
+    if df.empty or 'issueType' not in df.columns:
+        return None
+
+    cat_counts = df['issueType'].value_counts().reset_index()
+    cat_counts.columns = ['Category', 'Count']
+    cat_counts = cat_counts.head(top_n)
+
+    cat_counts['Cumulative'] = cat_counts['Count'].cumsum()
+    tot = cat_counts['Count'].sum()
+    cat_counts['Cum_Pct'] = (cat_counts['Cumulative'] / tot * 100).round(2)
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    fig.add_trace(
+        go.Bar(
+            x=cat_counts['Category'],
+            y=cat_counts['Count'],
+            name='Incident Count',
+            marker=dict(color='#DC2626', line=dict(color='#B91C1C', width=1)),
+            text=cat_counts['Count'],
+            textposition='auto',
+            hovertemplate='<b>%{x}</b><br>Incidents: <b>%{y:,}</b><extra></extra>'
+        ),
+        secondary_y=False
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=cat_counts['Category'],
+            y=cat_counts['Cum_Pct'],
+            name='Cumulative Share %',
+            mode='lines+markers',
+            line=dict(color='#2563EB', width=2.8, shape='spline'),
+            marker=dict(size=8, color='#2563EB', line=dict(color='#FFFFFF', width=1.5)),
+            hovertemplate='<b>%{x}</b><br>Cumulative: <b>%{y:.2f}%</b><extra></extra>'
+        ),
+        secondary_y=True
+    )
+
+    layout = _modern_layout(
+        title=f"Top {min(top_n, len(cat_counts))} Root Cause Categories (Pareto Analysis)",
+        subtitle="Most prevalent equipment and infrastructure fault categories",
+        height=360
+    )
+    layout.update(dict(
+        legend=dict(orientation="h", y=-0.26, x=0.5, xanchor="center")
+    ))
+    fig.update_layout(**layout)
+    fig.update_yaxes(title_text="Faults", secondary_y=False, showgrid=True, gridcolor="#F1F5F9")
+    fig.update_yaxes(title_text="Cumulative %", secondary_y=True, range=[0, 105], showgrid=False)
+    return fig
+
+
+def plot_charger_make_analysis(df):
+    """Plot fault count distribution across charger OEMs / Makes."""
+    if df.empty or 'chargerMake' not in df.columns:
+        return None
+
+    make_df = df[df['chargerMake'].notna() & (df['chargerMake'] != 'Unknown') & (df['chargerMake'] != '')].copy()
+    if make_df.empty:
+        return None
+
+    make_agg = make_df.groupby('chargerMake').agg(
+        Total=('issueId', 'count'),
+        Within_TAT=('_Is_Closed_Within_', 'sum'),
+        Breached=('_Is_Closed_Without_', 'sum'),
+        Open=('_Is_Open_', 'sum')
+    ).reset_index().sort_values('Total', ascending=False).head(8)
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=make_agg['chargerMake'],
+        y=make_agg['Within_TAT'],
+        name='Within TAT',
+        marker=dict(color='#10B981', line=dict(color='#059669', width=1)),
+        hovertemplate='<b>%{x}</b><br>🟢 Within TAT: <b>%{y:,}</b><extra></extra>'
+    ))
+    fig.add_trace(go.Bar(
+        x=make_agg['chargerMake'],
+        y=make_agg['Breached'],
+        name='Breached TAT',
+        marker=dict(color='#EF4444', line=dict(color='#DC2626', width=1)),
+        hovertemplate='<b>%{x}</b><br>🔴 Breached TAT: <b>%{y:,}</b><extra></extra>'
+    ))
+    fig.add_trace(go.Bar(
+        x=make_agg['chargerMake'],
+        y=make_agg['Open'],
+        name='Open Faults',
+        marker=dict(color='#F59E0B', line=dict(color='#D97706', width=1)),
+        hovertemplate='<b>%{x}</b><br>🟡 Open: <b>%{y:,}</b><extra></extra>'
+    ))
+
+    layout = _modern_layout(
+        title="Charger OEM Reliability & SLA Adherence",
+        subtitle="Fault volume and resolution breakdown by Charger Manufacturer",
+        height=360
+    )
+    layout.update(dict(
+        barmode='stack',
+        xaxis=dict(title=None, showgrid=False),
+        yaxis=dict(title="Fault Count", showgrid=True, gridcolor="#F1F5F9")
+    ))
+    fig.update_layout(**layout)
+    return fig
+
+
+def plot_station_hotspots(df, top_n=10):
+    """Plot horizontal bar of top incident stations."""
+    if df.empty or 'stationName' not in df.columns:
+        return None
+
+    st_counts = df[df['stationName'] != 'N/A']['stationName'].value_counts().reset_index()
+    st_counts.columns = ['Station', 'Faults']
+    st_top = st_counts.head(top_n).sort_values('Faults', ascending=True)
+
+    fig = go.Figure(go.Bar(
+        x=st_top['Faults'],
+        y=st_top['Station'],
+        orientation='h',
+        marker=dict(color='#991B1B', line=dict(color='#7F1D1D', width=1)),
+        text=st_top['Faults'],
+        textposition='outside',
+        textfont=dict(size=11, family='Inter, sans-serif', color='#0F172A'),
+        hovertemplate='<b>%{y}</b><br>Faults Logged: <b>%{x:,}</b><extra></extra>'
+    ))
+
+    layout = _modern_layout(
+        title=f"Top {min(top_n, len(st_top))} Station Incident Hotspots",
+        subtitle="Sites with the highest volume of registered operational issues",
+        height=max(360, len(st_top) * 35)
+    )
+    layout.update(dict(
+        xaxis=dict(title=None, showgrid=True, gridcolor="#F1F5F9"),
+        yaxis=dict(title=None, showgrid=False, autorange=True)
+    ))
+    fig.update_layout(**layout)
+    return fig
+
+
+# ─── Executive CSS & Styling ──────────────────────────────────────────────────
+
+def inject_modern_css():
     st.markdown("""
         <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
-        
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap');
+
+        /* Global Reset & Executive Theme */
         .stApp, [data-testid="stMain"], [data-testid="stHeader"] {
             background-color: #F8FAFC !important;
+            font-family: 'Inter', sans-serif !important;
         }
+
         [data-testid="stSidebar"] {
-            background-color: #FFFFFF !important;
-            border-right: 1px solid #E2E8F0 !important;
+            display: none !important;
         }
+
         html, body, p, span, label, div {
-            font-family: 'Inter', -apple-system, sans-serif;
-            color: #1E293B !important;
+            font-family: 'Inter', sans-serif;
+            color: #1E293B;
         }
+
         h1, h2, h3, h4, h5, h6 {
+            font-family: 'Plus Jakarta Sans', 'Inter', sans-serif !important;
             color: #0F172A !important;
             font-weight: 800 !important;
-            letter-spacing: -0.02em !important;
+            letter-spacing: -0.025em !important;
         }
-        .stButton > button, div[data-testid="stDownloadButton"] > button {
-            background: linear-gradient(135deg, #801B1B 0%, #B91C1C 50%, #DC2626 100%) !important;
+
+        /* ── Full-Width Executive Header Banner ── */
+        .exec-banner {
+            background: linear-gradient(135deg, #3B0707 0%, #7F1D1D 35%, #991B1B 70%, #DC2626 100%);
+            padding: 2.0rem 2.6rem;
+            border-radius: 24px;
             color: #FFFFFF !important;
-            border-radius: 10px !important;
-            font-weight: 700 !important;
-            font-size: 0.92rem !important;
-            border: none !important;
-            padding: 0.65rem 1.4rem !important;
-            box-shadow: 0 4px 14px rgba(185, 28, 28, 0.25) !important;
-            transition: all 0.2s ease !important;
+            box-shadow: 0 16px 40px rgba(153,27,27,0.22), inset 0 1px 0 rgba(255,255,255,0.2);
+            margin-bottom: 1.4rem;
+            border-left: 8px solid #F87171;
+            position: relative;
+            overflow: hidden;
         }
-        .stButton > button:hover, div[data-testid="stDownloadButton"] > button:hover {
-            background: linear-gradient(135deg, #7F1D1D 0%, #991B1B 50%, #B91C1C 100%) !important;
-            box-shadow: 0 6px 20px rgba(153, 27, 27, 0.38) !important;
-            transform: translateY(-2px) !important;
+        .exec-banner::after {
+            content: '';
+            position: absolute;
+            top: -40%;
+            right: -8%;
+            width: 420px;
+            height: 420px;
+            background: radial-gradient(circle, rgba(255,255,255,0.15) 0%, rgba(255,255,255,0) 70%);
+            border-radius: 50%;
+            pointer-events: none;
         }
-        button[data-baseweb="tab"] {
-            font-weight: 700 !important;
-            color: #64748B !important;
-            font-size: 0.95rem !important;
-            padding: 0.75rem 1.25rem !important;
-            border-radius: 8px 8px 0 0 !important;
-        }
-        button[data-baseweb="tab"]:hover {
-            color: #991B1B !important;
-        }
-        button[data-baseweb="tab"][aria-selected="true"] {
-            color: #991B1B !important;
-            border-bottom: 3px solid #DC2626 !important;
-            background-color: rgba(220, 38, 38, 0.04) !important;
-        }
-        div[data-baseweb="tab-highlight"] {
-            background-color: #DC2626 !important;
-            height: 3px !important;
-        }
-        .exec-header-box {
-            background: linear-gradient(135deg, #6B1111 0%, #991B1B 45%, #B91C1C 100%);
-            padding: 1.6rem 2.2rem;
-            border-radius: 16px;
-            color: #FFFFFF;
-            box-shadow: 0 10px 28px rgba(153, 27, 27, 0.20);
-            margin-bottom: 1.5rem;
-            border-left: 8px solid #EF4444;
+        .exec-banner * {
+            color: #FFFFFF !important;
         }
         .exec-badge {
-            background: rgba(255, 255, 255, 0.18);
-            color: #FFFFFF;
-            font-size: 0.72rem;
+            background: rgba(255,255,255,0.20);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            color: #FFFFFF !important;
+            font-size: 0.74rem;
             font-weight: 800;
-            padding: 5px 14px;
+            padding: 6px 16px;
             border-radius: 20px;
-            letter-spacing: 0.08em;
+            letter-spacing: 0.12em;
             text-transform: uppercase;
             display: inline-block;
-            margin-bottom: 0.6rem;
-            border: 1px solid rgba(255, 255, 255, 0.35);
+            margin-bottom: 0.55rem;
+            border: 1px solid rgba(255,255,255,0.40);
         }
         .exec-title {
-            font-size: 2.1rem;
-            font-weight: 900;
+            font-size: 2.25rem !important;
+            font-weight: 900 !important;
             color: #FFFFFF !important;
-            margin: 0;
-            line-height: 1.2;
+            margin: 0.15rem 0 0.40rem 0 !important;
+            line-height: 1.2 !important;
+            letter-spacing: -0.03em !important;
+            text-shadow: 0 3px 12px rgba(0,0,0,0.30) !important;
         }
         .exec-subtitle {
-            font-size: 0.95rem;
+            font-size: 0.98rem !important;
             color: #FEE2E2 !important;
-            margin-top: 0.35rem;
-            margin-bottom: 0;
-            font-weight: 500;
+            margin-top: 0.2rem !important;
+            font-weight: 500 !important;
+            opacity: 0.96;
+        }
+
+        /* ── Streamlit Pills Navigation ── */
+        div[data-testid="stPills"],
+        div[data-testid="stSegmentedControl"],
+        div[data-testid="stButtonGroupRoot"] {
+            display: flex !important;
+            justify-content: flex-start !important;
+            gap: 0.65rem !important;
+            margin-bottom: 1.5rem !important;
+            flex-wrap: wrap !important;
+        }
+        div[data-testid="stPills"] button,
+        div[data-testid="stSegmentedControl"] button,
+        div[data-testid="stButtonGroupRoot"] button {
+            border-radius: 50px !important;
+            padding: 0.65rem 1.55rem !important;
+            font-size: 0.93rem !important;
+            font-weight: 700 !important;
+            border: 1.5px solid #E2E8F0 !important;
+            background: #FFFFFF !important;
+            color: #475569 !important;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.03) !important;
+            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
+        }
+        div[data-testid="stPills"] button:hover,
+        div[data-testid="stSegmentedControl"] button:hover,
+        div[data-testid="stButtonGroupRoot"] button:hover {
+            border-color: #FCA5A5 !important;
+            color: #991B1B !important;
+            background: #FFF5F5 !important;
+            transform: translateY(-2px) !important;
+            box-shadow: 0 8px 18px rgba(153,27,27,0.10) !important;
+        }
+        div[data-testid="stPills"] button[aria-pressed="true"],
+        div[data-testid="stPills"] button[data-selected="true"],
+        div[data-testid="stSegmentedControl"] button[aria-pressed="true"],
+        div[data-testid="stSegmentedControl"] button[data-selected="true"],
+        div[data-testid="stButtonGroupRoot"] button[aria-pressed="true"],
+        div[data-testid="stButtonGroupRoot"] button[data-selected="true"],
+        button[data-testid="stBaseButton-pillsActive"] {
+            background: linear-gradient(135deg, #991B1B 0%, #DC2626 100%) !important;
+            color: #FFFFFF !important;
+            border-color: #DC2626 !important;
+            box-shadow: 0 6px 20px rgba(220,38,38,0.38) !important;
+        }
+        div[data-testid="stPills"] button[aria-pressed="true"] *,
+        div[data-testid="stPills"] button[data-selected="true"] *,
+        button[data-testid="stBaseButton-pillsActive"] * {
+            color: #FFFFFF !important;
+        }
+
+        /* ── Modern Streamlit Tabs Styling ── */
+        div[data-testid="stTabs"] [data-baseweb="tab-list"] {
+            gap: 8px !important;
+            border-bottom: 2px solid #E2E8F0 !important;
+            padding-bottom: 4px !important;
+        }
+        div[data-testid="stTabs"] [data-baseweb="tab"] {
+            height: 44px !important;
+            white-space: pre !important;
+            border-radius: 12px 12px 0 0 !important;
+            font-weight: 700 !important;
+            font-size: 0.92rem !important;
+            color: #64748B !important;
+            padding: 0 16px !important;
+            transition: all 0.2s ease !important;
+        }
+        div[data-testid="stTabs"] [aria-selected="true"] {
+            color: #991B1B !important;
+            border-bottom: 3px solid #DC2626 !important;
+            background: #FFF5F5 !important;
+        }
+
+        /* ── Modern KPI Cards ── */
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 0.9rem;
+            margin-bottom: 1.6rem;
+        }
+        @media (max-width: 1400px) {
+            .kpi-grid { grid-template-columns: repeat(4, 1fr); }
+        }
+        @media (max-width: 900px) {
+            .kpi-grid { grid-template-columns: repeat(2, 1fr); }
         }
         .metric-card {
             background: #FFFFFF;
-            border: 1px solid #FEE2E2;
-            border-radius: 14px;
-            padding: 1.15rem 1.35rem;
-            box-shadow: 0 4px 14px rgba(153, 27, 27, 0.05);
-            transition: all 0.25s ease;
+            border: 1px solid #F1F5F9;
+            border-radius: 18px;
+            padding: 1.20rem 1.30rem;
+            box-shadow: 0 6px 20px rgba(15,23,42,0.04);
+            transition: all 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
         }
+        .metric-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+        }
+        .metric-card.red::before     { background: linear-gradient(90deg, #DC2626, #EF4444); }
+        .metric-card.darkred::before { background: linear-gradient(90deg, #7F1D1D, #991B1B); }
+        .metric-card.amber::before   { background: linear-gradient(90deg, #D97706, #F59E0B); }
+        .metric-card.green::before   { background: linear-gradient(90deg, #059669, #10B981); }
+        .metric-card.blue::before    { background: linear-gradient(90deg, #1D4ED8, #3B82F6); }
+        .metric-card.purple::before  { background: linear-gradient(90deg, #6D28D9, #8B5CF6); }
+        .metric-card.slate::before   { background: linear-gradient(90deg, #475569, #64748B); }
+
         .metric-card:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 10px 25px rgba(153, 27, 27, 0.12);
+            transform: translateY(-5px);
+            box-shadow: 0 14px 32px rgba(153,27,27,0.10);
             border-color: #FCA5A5;
         }
-        .metric-card.red { border-top: 5px solid #DC2626; }
-        .metric-card.darkred { border-top: 5px solid #991B1B; }
-        .metric-card.grey { border-top: 5px solid #7F1D1D; }
-        .metric-card.green { border-top: 5px solid #B91C1C; }
-        .metric-card.amber { border-top: 5px solid #EF4444; }
-
+        .metric-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 0.4rem;
+        }
+        .metric-icon {
+            font-size: 1.65rem;
+            line-height: 1;
+        }
         .metric-label {
-            font-size: 0.73rem;
+            font-size: 0.72rem;
             font-weight: 800;
-            color: #991B1B !important;
+            color: #64748B !important;
             text-transform: uppercase;
-            letter-spacing: 0.07em;
+            letter-spacing: 0.09em;
         }
         .metric-val {
-            font-size: 1.85rem;
+            font-size: 1.90rem;
             font-weight: 900;
-            color: #7F1D1D !important;
-            margin-top: 0.25rem;
+            color: #0F172A !important;
+            line-height: 1.15;
+            letter-spacing: -0.025em;
+            margin: 0.2rem 0;
+            font-family: 'Plus Jakarta Sans', sans-serif;
         }
         .metric-sub {
-            font-size: 0.74rem;
-            color: #991B1B !important;
-            margin-top: 0.2rem;
+            font-size: 0.76rem;
+            color: #64748B !important;
             font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 4px;
         }
+        .metric-badge {
+            font-size: 0.70rem;
+            font-weight: 700;
+            padding: 3px 10px;
+            border-radius: 12px;
+            display: inline-block;
+        }
+        .metric-badge.green { background: #DCFCE7; color: #15803D !important; }
+        .metric-badge.amber { background: #FEF3C7; color: #B45309 !important; }
+        .metric-badge.red   { background: #FEE2E2; color: #B91C1C !important; }
+
+        /* ── Modern Section Header ── */
         .section-header {
-            font-size: 1.15rem;
+            font-size: 1.25rem;
             font-weight: 800;
-            color: #991B1B !important;
-            margin-top: 1.2rem;
-            margin-bottom: 0.9rem;
-            border-bottom: 2px solid #FEE2E2;
-            padding-bottom: 0.45rem;
+            color: #0F172A !important;
+            margin-top: 1.6rem;
+            margin-bottom: 1.1rem;
+            padding-bottom: 0.55rem;
+            border-bottom: 2px solid #F1F5F9;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+        }
+        .section-header-accent {
+            color: #DC2626 !important;
+        }
+
+        /* ── Buttons & Downloads ── */
+        .stButton > button, div[data-testid="stDownloadButton"] > button {
+            background: linear-gradient(135deg, #801B1B 0%, #B91C1C 50%, #DC2626 100%) !important;
+            color: #FFFFFF !important;
+            border-radius: 12px !important;
+            font-weight: 700 !important;
+            font-size: 0.90rem !important;
+            border: none !important;
+            padding: 0.65rem 1.45rem !important;
+            box-shadow: 0 4px 16px rgba(185,28,28,0.25) !important;
+            transition: all 0.22s ease !important;
+        }
+        .stButton > button:hover, div[data-testid="stDownloadButton"] > button:hover {
+            background: linear-gradient(135deg, #6B1111 0%, #991B1B 50%, #B91C1C 100%) !important;
+            box-shadow: 0 8px 24px rgba(153,27,27,0.38) !important;
+            transform: translateY(-2px) !important;
+        }
+
+        /* ── Chart Container Cards ── */
+        .chart-card {
+            background: #FFFFFF;
+            border: 1px solid #E2E8F0;
+            border-radius: 20px;
+            padding: 1.2rem;
+            box-shadow: 0 4px 20px rgba(15,23,42,0.03);
+            margin-bottom: 1.2rem;
+            transition: all 0.25s ease;
+        }
+        .chart-card:hover {
+            box-shadow: 0 10px 28px rgba(15,23,42,0.07);
+            border-color: #CBD5E1;
+        }
+
+        /* ── Container Cards ── */
+        .content-card {
+            background: #FFFFFF;
+            border: 1px solid #E2E8F0;
+            border-radius: 20px;
+            padding: 1.5rem 1.8rem;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.03);
+            margin-bottom: 1.3rem;
+        }
+
+        /* ── Dataframe Styling ── */
+        [data-testid="stDataFrame"] {
+            border-radius: 16px;
+            overflow: hidden;
+            border: 1px solid #E2E8F0;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.03);
+        }
+
+        /* ── Upload Area ── */
+        .upload-card {
+            background: #FFFFFF;
+            border: 2px dashed #FCA5A5;
+            border-radius: 20px;
+            padding: 2.4rem 2.0rem;
+            text-align: center;
+            transition: all 0.25s ease;
+        }
+        .upload-card:hover {
+            border-color: #DC2626;
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(153,27,27,0.10);
         }
         </style>
     """, unsafe_allow_html=True)
 
-    # Executive Banner
+
+# ─── Navigation Header ────────────────────────────────────────────────────────
+
+NAV_ITEMS = [
+    "📊 Executive Analytics",
+    "🔁 Repetitive Faults",
+    "🚨 Critical & SLA Breached",
+    "👷 ZME & Zone Governance",
+    "📋 Issue Explorer",
+    "📤 Data Upload & Validation"
+]
+
+def render_header_and_nav():
+    """Render the executive header banner and pills navigation bar."""
+    if 'active_nav' not in st.session_state:
+        st.session_state.active_nav = NAV_ITEMS[0]
+
     st.markdown("""
-        <div class="exec-header-box">
-            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
-                <div>
-                    <span class="exec-badge">⚡ CHARGEZONE EXECUTIVE BOARD • OPERATIONS DASHBOARD</span>
-                    <h1 class="exec-title">Monthly Progress Report (MPR) & PM Governance</h1>
-                    <p class="exec-subtitle">Interactive SLA analytics, Preventive Maintenance (PM F-01) tracking & PM Pending governance.</p>
-                </div>
+        <div class="exec-banner">
+            <div>
+                <span class="exec-badge">⚡ CHARGEZONE OPERATIONS • SLA GOVERNANCE</span>
+                <div class="exec-title">MPR - Issue Tracker Dashboard</div>
+                <div class="exec-subtitle">Real-time incident tracking, turnaround time (TAT) compliance, and field engineering analytics.</div>
             </div>
         </div>
     """, unsafe_allow_html=True)
 
-    # Sidebar Controls
-    st.sidebar.markdown("### ⚙️ Control Panel")
-    st.sidebar.markdown("---")
-
-    st.sidebar.markdown("**Upload Operational Files:**")
-    issue_file = st.sidebar.file_uploader("1️⃣ Issue Tracker File", type=["xlsx", "csv"], key="sep_issue")
-    pm_file = st.sidebar.file_uploader("2️⃣ PM Tracker File", type=["xlsx", "csv"], key="sep_pm")
-
-    file_bytes_input = None
-    if issue_file is not None or pm_file is not None:
-        file_bytes_input = {
-            'issue': issue_file.getvalue() if issue_file else None,
-            'pm': pm_file.getvalue() if pm_file else None
-        }
-
-    if file_bytes_input is None:
-        st.markdown("""
-            <div style="background-color: #FFFFFF; border: 2px dashed #FCA5A5; border-radius: 16px; padding: 3rem 2rem; text-align: center; margin-top: 1.5rem; box-shadow: 0 4px 14px rgba(153, 27, 27, 0.04);">
-                <div style="font-size: 3.5rem; margin-bottom: 0.8rem;">📥</div>
-                <h2 style="color: #991B1B !important; font-weight: 800; margin-bottom: 0.5rem;">Clean Dashboard — Data Upload Required</h2>
-                <p style="color: #475569 !important; font-size: 1.05rem; max-width: 620px; margin: 0 auto 1.8rem auto;">
-                    Please upload your operational files (Issue Tracker & PM Tracker) using the <b>Control Panel</b> in the sidebar to populate interactive charts, SLA metrics, and PM Pending governance reports.
-                </p>
-                <div style="display: flex; justify-content: center; gap: 1.5rem; flex-wrap: wrap; text-align: left; max-width: 700px; margin: 0 auto; background: #FFF5F5; padding: 1.2rem 1.6rem; border-radius: 12px; border: 1px solid #FEE2E2;">
-                    <div>
-                        <b style="color: #991B1B;">1️⃣ Issue Tracker File</b>
-                        <p style="margin: 0.2rem 0 0 0; font-size: 0.88rem; color: #64748B;">Upload your Issue Tracker file via the sidebar.</p>
-                    </div>
-                    <div style="border-left: 1px solid #FCA5A5; padding-left: 1.5rem;">
-                        <b style="color: #991B1B;">2️⃣ PM Tracker File</b>
-                        <p style="margin: 0.2rem 0 0 0; font-size: 0.88rem; color: #64748B;">Upload your PM Tracker file via the sidebar.</p>
-                    </div>
-                </div>
-            </div>
-        """, unsafe_allow_html=True)
-        return
-
-    with st.spinner("Parsing operational workbook data..."):
-        try:
-            issue_df, pm_df = load_workbook_data(file_bytes_input)
-        except Exception as e:
-            st.error(f"⚠️ Error parsing workbook: {e}")
-            return
-
-    quarters = build_quarters(issue_df, pm_df)
-    quarter_labels = list(quarters.keys())
-
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("#### 📅 Select Quarter & Months")
-
-    # Default to the most recent quarter that actually has reported PM
-    # status data, not "All Quarters" -- opening on a multi-year aggregate
-    # by default made every KPI look inflated/confusing at first glance.
-    reported_quarters = [
-        q for q in quarter_labels
-        if q != 'All Quarters' and not pm_df.empty
-        and pm_df.loc[pm_df['quarterLabel'] == q, 'status'].notna().any()
-    ]
-    default_quarter = reported_quarters[-1] if reported_quarters else quarter_labels[0]
-    default_idx = quarter_labels.index(default_quarter)
-
-    selected_quarter = st.sidebar.selectbox("Quarter:", quarter_labels, index=default_idx)
-    months_for_quarter = quarters[selected_quarter]
-
-    selected_months = st.sidebar.multiselect("Months:", months_for_quarter, default=months_for_quarter)
-
-    if not selected_months:
-        selected_months = months_for_quarter
-
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("#### 📥 Export Executive Report")
-    month_slug = "_".join(selected_months[:3]) if len(selected_months) <= 3 else f"{selected_months[0]}_to_{selected_months[-1]}"
-    report_filename = f"ChargeZone_MPR_Report_{selected_quarter}_{month_slug}.xlsx"
-
-    report_bytes = generate_mpr_excel_report(issue_df, pm_df, tuple(selected_months))
-    st.sidebar.download_button(
-        label="📥 Download Executive Report (.xlsx)",
-        data=report_bytes,
-        file_name=report_filename,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
+    selected_nav = st.pills(
+        "Section Navigation",
+        NAV_ITEMS,
+        default=st.session_state.active_nav,
+        label_visibility="collapsed",
+        key="top_navbar_pills"
     )
 
-    # Tabs
-    tab_issues, tab_pm, tab_raw = st.tabs([
-        "📉 Issue Dashboard (SLA Analytics)",
-        "🛠️ PM Dashboard (PM F-01 & Pending)",
-        "📋 Data Explorer"
-    ])
+    if selected_nav and selected_nav != st.session_state.active_nav:
+        st.session_state.active_nav = selected_nav
+        st.rerun()
 
-    # TAB 1: ISSUE DASHBOARD
-    with tab_issues:
-        st.markdown('<div class="section-header">📊 Operational Issue & SLA Performance</div>', unsafe_allow_html=True)
-        
-        selected_issues = issue_df[issue_df['month'].isin(selected_months)] if not issue_df.empty and selected_months else issue_df
+    return st.session_state.active_nav
 
-        # Executive Formulas:
-        # Total Registered = len(selected_issues)
-        # Open Faults = count(_Is_Open_)
-        # Closed Faults = count(_Is_Closed_)
-        # Closed Within TAT = count(_Is_Closed_Within_)
-        # Closed Without TAT = count(_Is_Closed_Without_)
-        # Overall CM Efficiency % = (Closed Faults / Faults Registered) * 100
-        # CM-TAT Efficiency % = (Closed Within TAT / Total Registered Faults) * 100
-        total_issues = len(selected_issues)
-        total_open = int(selected_issues['_Is_Open_'].sum()) if not selected_issues.empty else 0
-        total_closed = int(selected_issues['_Is_Closed_'].sum()) if not selected_issues.empty else 0
-        closed_within = int(selected_issues['_Is_Closed_Within_'].sum()) if not selected_issues.empty else 0
-        closed_without = int(selected_issues['_Is_Closed_Without_'].sum()) if not selected_issues.empty else 0
 
-        overall_cm_eff = (total_closed / total_issues * 100) if total_issues > 0 else 0.0
-        cm_tat_eff = (closed_within / total_issues * 100) if total_issues > 0 else 0.0
+# ─── Filter Toolbar ───────────────────────────────────────────────────────────
 
-        # KPI Row (7 Cards)
-        k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
-        with k1:
-            st.markdown(f'<div class="metric-card darkred"><div class="metric-label">Faults Registered</div><div class="metric-val">{total_issues:,}</div><div class="metric-sub">Total Logged</div></div>', unsafe_allow_html=True)
-        with k2:
-            st.markdown(f'<div class="metric-card amber"><div class="metric-label">Open Faults</div><div class="metric-val">{total_open:,}</div><div class="metric-sub">Pending / Active</div></div>', unsafe_allow_html=True)
-        with k3:
-            st.markdown(f'<div class="metric-card grey"><div class="metric-label">Closed Faults</div><div class="metric-val">{total_closed:,}</div><div class="metric-sub">Resolved</div></div>', unsafe_allow_html=True)
-        with k4:
-            st.markdown(f'<div class="metric-card green"><div class="metric-label">Closed Within TAT</div><div class="metric-val">{closed_within:,}</div><div class="metric-sub">SLA Compliant</div></div>', unsafe_allow_html=True)
-        with k5:
-            st.markdown(f'<div class="metric-card red"><div class="metric-label">Closed Without TAT</div><div class="metric-val">{closed_without:,}</div><div class="metric-sub">SLA Breached</div></div>', unsafe_allow_html=True)
-        with k6:
-            st.markdown(f'<div class="metric-card {"green" if overall_cm_eff >= 85 else "amber"}"><div class="metric-label">Overall CM Eff %</div><div class="metric-val">{overall_cm_eff:.2f}%</div><div class="metric-sub">Closed / Registered</div></div>', unsafe_allow_html=True)
-        with k7:
-            st.markdown(f'<div class="metric-card {"green" if cm_tat_eff >= 80 else "amber"}"><div class="metric-label">CM-TAT Eff %</div><div class="metric-val">{cm_tat_eff:.2f}%</div><div class="metric-sub">Within TAT / Registered</div></div>', unsafe_allow_html=True)
+def render_filter_toolbar(issue_df):
+    """Render clean horizontal filter toolbar with Month, Zone, ZME, Severity, Search, and Excel Download."""
+    all_months = get_available_months(issue_df)
 
-        st.markdown("<br>", unsafe_allow_html=True)
+    with st.container():
+        st.markdown("""
+            <div style="background: #FFFFFF; border: 1.5px solid #FEE2E2; border-radius: 16px;
+                        padding: 0.75rem 1.4rem; margin-bottom: 1.1rem; box-shadow: 0 2px 10px rgba(153,27,27,0.03);
+                        display: flex; align-items: center; justify-content: space-between;">
+                <span style="color: #991B1B; font-weight: 800; font-size: 0.84rem; text-transform: uppercase; letter-spacing: 0.08em; display: flex; align-items: center; gap: 6px;">
+                    ⚡ Governance Filters &amp; Report Export
+                </span>
+                <span style="font-size: 0.80rem; color: #64748B; font-weight: 600;">
+                    Live Incident Pipeline
+                </span>
+            </div>
+        """, unsafe_allow_html=True)
 
-        # 1. ZME Performance Table & Chart
-        st.markdown('<div class="section-header">1. ZME Performance & SLA Compliance Breakdown</div>', unsafe_allow_html=True)
-        zme_issue_table = compute_zme_issue_table(issue_df, selected_months)
-        
-        if not zme_issue_table.empty:
-            col_zme_chart, col_zme_tbl = st.columns([6, 6])
-            with col_zme_chart:
-                fig_zme = plot_grouped_bar(
-                    df=zme_issue_table.head(10),
-                    x_col='zme', y_cols=['total', 'open', 'within', 'outside'],
-                    title="Fault Breakdown for Top 10 ZMEs",
-                    colors=['#991B1B', '#EF4444', '#DC2626', '#7F1D1D']
-                )
-                st.plotly_chart(fig_zme, use_container_width=True)
-            with col_zme_tbl:
-                st.write("##### ZME Summary Data Table")
-                st.dataframe(
-                    zme_issue_table.rename(columns={
-                        'zme': 'ZME Name', 'zone': 'Zone', 'total': 'Faults Registered',
-                        'open': 'Open Faults', 'closed': 'Closed Faults',
-                        'within': 'Closed Within TAT', 'outside': 'Closed Without TAT',
-                        'cm_efficiency': 'Overall CM Efficiency %', 'tat_efficiency': 'CM-TAT Efficiency %'
-                    }).style.format({
-                        'Faults Registered': '{:,}', 'Open Faults': '{:,}', 'Closed Faults': '{:,}',
-                        'Closed Within TAT': '{:,}', 'Closed Without TAT': '{:,}',
-                        'Overall CM Efficiency %': '{:.2f}%', 'CM-TAT Efficiency %': '{:.2f}%'
-                    }).background_gradient(subset=['Overall CM Efficiency %', 'CM-TAT Efficiency %'], cmap='Reds'),
-                    use_container_width=True, height=320
-                )
+        col_m, col_z, col_zme, col_sev = st.columns([3.0, 2.5, 2.5, 2.0])
+
+        with col_m:
+            selected_months = st.multiselect(
+                "🗓️ Months:",
+                all_months,
+                default=all_months,
+                key="flt_months"
+            )
+            if not selected_months:
+                selected_months = all_months
+
+        # Base filtered slice for dynamic Zone/ZME dropdowns
+        temp_df = issue_df.copy()
+        if selected_months:
+            temp_df = temp_df[temp_df['month'].isin(selected_months)]
+
+        available_zones = sorted(list(temp_df['zone'].dropna().unique())) if not temp_df.empty else []
+        with col_z:
+            selected_zones = st.multiselect("🏢 Zone / Region:", available_zones, default=available_zones, key="flt_zones")
+            if not selected_zones:
+                selected_zones = available_zones
+
+        # ZMEs within selected zones
+        if selected_zones and not temp_df.empty:
+            zme_pool = sorted(list(temp_df[temp_df['zone'].isin(selected_zones)]['zme'].dropna().unique()))
         else:
-            st.info("No issue records found for selected month(s). Try selecting 'All Quarters'.")
+            zme_pool = sorted(list(temp_df['zme'].dropna().unique())) if not temp_df.empty else []
 
-        st.markdown("---")
+        with col_zme:
+            selected_zmes = st.multiselect("👷 ZME / Engineer:", zme_pool, default=zme_pool, key="flt_zmes")
+            if not selected_zmes:
+                selected_zmes = zme_pool
 
-        # 2. Zone Performance Breakdown & Drill-Down Inspector
-        st.markdown('<div class="section-header">🏢 2. Zone Performance & Efficiency</div>', unsafe_allow_html=True)
-        if not selected_issues.empty:
-            zone_agg = selected_issues.groupby('zone').agg(
-                Registered=('zme', 'size'),
-                Open=('_Is_Open_', 'sum'),
-                Closed=('_Is_Closed_', 'sum'),
-                Within_TAT=('_Is_Closed_Within_', 'sum'),
-                Without_TAT=('_Is_Closed_Without_', 'sum'),
-            ).reset_index()
-            # New Formulas:
-            # Overall CM Efficiency % = Closed / Registered * 100
-            # CM-TAT Efficiency % = Within_TAT / Registered * 100
-            zone_agg['Overall CM Efficiency %'] = (zone_agg['Closed'] / zone_agg['Registered'] * 100).round(1)
-            zone_agg['CM-TAT Efficiency %'] = (zone_agg['Within_TAT'] / zone_agg['Registered'].replace(0, pd.NA) * 100).fillna(0.0).round(1)
+        with col_sev:
+            available_sevs = ['All'] + sorted(list(issue_df['severity'].dropna().unique())) if not issue_df.empty else ['All']
+            selected_severity = st.selectbox("⚡ Severity:", available_sevs, index=0, key="flt_severity")
 
-            col_z_c, col_z_t = st.columns([6, 6])
-            with col_z_c:
-                st.plotly_chart(
-                    plot_grouped_bar(
-                        zone_agg, x_col='zone',
-                        y_cols=['Registered', 'Open', 'Within_TAT', 'Without_TAT'],
-                        title="Zone Performance Comparison",
-                        colors=['#991B1B', '#EF4444', '#DC2626', '#7F1D1D']
-                    ), use_container_width=True
-                )
-            with col_z_t:
-                st.write("##### Zone Summary Data Table")
-                st.dataframe(
-                    zone_agg.rename(columns={'zone': 'Zone'}).style.format({
-                        'Registered': '{:,}', 'Open': '{:,}', 'Closed': '{:,}',
-                        'Within_TAT': '{:,}', 'Without_TAT': '{:,}',
-                        'Overall CM Efficiency %': '{:.2f}%', 'CM-TAT Efficiency %': '{:.2f}%'
-                    }).background_gradient(subset=['Overall CM Efficiency %', 'CM-TAT Efficiency %'], cmap='Reds'),
-                    use_container_width=True, height=300
-                )
+        # Secondary filter row: Charger Make, Search, and Excel Export
+        col_make, col_search, col_exp = st.columns([2.5, 5.0, 2.5])
+        with col_make:
+            available_makes = ['All'] + sorted(list(issue_df[issue_df['chargerMake'] != 'Unknown']['chargerMake'].dropna().unique())) if not issue_df.empty else ['All']
+            selected_make = st.selectbox("🔌 Charger Make:", available_makes, index=0, key="flt_make")
 
-        st.markdown("---")
+        with col_search:
+            search_query = st.text_input("🔍 Search (Issue ID, Station, Charger ID, Keyword):", placeholder="e.g. CZ-0010, KA0010, Ador, Canopy...", key="flt_search")
 
-        # 3. Status Pipeline Breakdown
-        st.markdown('<div class="section-header">📌 3. Status Breakdown</div>', unsafe_allow_html=True)
-        if not selected_issues.empty:
-            st_counts = selected_issues['status'].value_counts().reset_index()
-            st_counts.columns = ['Status', 'Count']
-            col_st_c, col_st_t = st.columns([7, 5])
-            with col_st_c:
-                st.plotly_chart(plot_interactive_bar(st_counts, 'Status', 'Count', 'Status Pipeline', '#991B1B'), use_container_width=True)
-            with col_st_t:
-                st.write("##### Status Pipeline Table")
-                st.dataframe(st_counts.style.format({'Count': '{:,}'}).background_gradient(subset=['Count'], cmap='Reds'), use_container_width=True, height=280)
-
-        st.markdown("---")
-
-        # 5. Repetitive Faults & Top Issue / Sub-Issue Explorer
-        st.markdown('<div class="section-header">⚠️ 5. Repetitive Faults, Top 10 Issue Types & Top 5 Sub-Issues Analytics</div>', unsafe_allow_html=True)
-        
-        if not selected_issues.empty:
-            stn_c = find_col(selected_issues, ['Station ID', 'Station_ID', 'Station', 'Site ID']) or 'stationId'
-            stn_name_c = find_col(selected_issues, ['Station Name', 'Station_Name', 'Site Name']) or 'stationName'
-            zme_c = find_col(selected_issues, ['ZME', 'ZME Name', 'ZME_Name', 'Zone Manager']) or 'zme'
-            zone_c = find_col(selected_issues, ['Zone', 'Zone Name', 'Region']) or 'zone'
-            ocpp_c = find_col(selected_issues, ['OCPP ID', 'OCPP_ID', 'Charger ID', 'Connector ID', 'EVSE ID', 'OCPP']) or 'ocppId'
-            type_c = find_col(selected_issues, ['Issue Type', 'Issue_Type', 'Category']) or 'issueType'
-            sub_c = find_col(selected_issues, ['Issue Sub-Type', 'Issue Sub Type', 'Sub Type', 'Fault Subtype', 'Issue Subtype']) or 'issueSubType'
-
-            # A. Top 10 Overall Repetitive Issue Types & Top 5 Sub-Types Explorer
-            if type_c in selected_issues.columns:
-                st.markdown("##### ⚡ Top 10 Overall Repetitive Issue Types & Top 5 Sub-Types Explorer")
-                st.caption("Click on any Issue Type below to view its Top 5 Sub-Types and affected station/charger records:")
-
-                type_totals = selected_issues.groupby(type_c).size().reset_index(name='Total_Faults')
-                type_totals = type_totals.sort_values(by='Total_Faults', ascending=False).head(10)
-
-                c_type_chart, c_type_tbl = st.columns([6, 6])
-                with c_type_chart:
-                    st.plotly_chart(
-                        plot_interactive_bar(
-                            df=type_totals,
-                            x_col=type_c,
-                            y_col='Total_Faults',
-                            title="Top 10 Overall Repetitive Issue Types",
-                            color_hex="#991B1B"
-                        ),
-                        use_container_width=True
-                    )
-
-                with c_type_tbl:
-                    st.write("**Top 10 Issue Types Summary Table:**")
-                    type_totals['Share %'] = (type_totals['Total_Faults'] / len(selected_issues) * 100).round(1)
-                    st.dataframe(
-                        type_totals.rename(columns={type_c: 'Issue Type'}).style.format({'Total_Faults': '{:,}', 'Share %': '{:.1f}%'}).background_gradient(subset=['Total_Faults'], cmap='Reds'),
-                        use_container_width=True,
-                        height=260
-                    )
-
-                # Expanders for each Top 10 Issue Type showing Top 5 Sub-Types
-                for _, row_t in type_totals.iterrows():
-                    t_name = str(row_t[type_c]).strip()
-                    t_count = int(row_t['Total_Faults'])
-
-                    df_type_sub = selected_issues[selected_issues[type_c].astype(str).str.strip() == t_name]
-
-                    if sub_c in df_type_sub.columns:
-                        sub_counts = df_type_sub.groupby(sub_c).size().reset_index(name='Subtype_Count')
-                        sub_counts = sub_counts.sort_values(by='Subtype_Count', ascending=False).head(5)
-                    else:
-                        sub_counts = pd.DataFrame()
-
-                    expander_title = f"🔧 Issue Type: {t_name} — Total {t_count:,} Occurrences ({len(sub_counts)} Top Sub-Types)"
-                    with st.expander(expander_title, expanded=False):
-                        if not sub_counts.empty:
-                            c_sub_chart, c_sub_tbl = st.columns([6, 6])
-                            with c_sub_chart:
-                                st.plotly_chart(
-                                    plot_interactive_bar(
-                                        df=sub_counts,
-                                        x_col=sub_c,
-                                        y_col='Subtype_Count',
-                                        title=f"Top 5 Sub-Types for '{t_name}'",
-                                        color_hex="#DC2626"
-                                    ),
-                                    use_container_width=True
-                                )
-                            with c_sub_tbl:
-                                st.write(f"📌 **Top 5 Sub-Types Table for {t_name}:**")
-                                sub_counts['Sub-Type Share %'] = (sub_counts['Subtype_Count'] / t_count * 100).round(1)
-                                st.dataframe(
-                                    sub_counts.rename(columns={sub_c: 'Issue Sub-Type'}).style.format({'Subtype_Count': '{:,}', 'Sub-Type Share %': '{:.1f}%'}).background_gradient(subset=['Subtype_Count'], cmap='Reds'),
-                                    use_container_width=True,
-                                    height=220
-                                )
-
-                            st.write(f"📝 **Underlying Ticket Records for Issue Type '{t_name}':**")
-                            stat_c = find_col(df_type_sub, ['Status', 'Ticket Status', 'Issue Status']) or 'status'
-                            tat_c = find_col(df_type_sub, ['TAT Compliance', 'SLA Compliance']) or 'tatCompliance'
-                            type_disp_cols = [c for c in [ocpp_c, stn_c, stn_name_c, sub_c, stat_c, tat_c, zme_c, zone_c] if c and c in df_type_sub.columns]
-                            if type_disp_cols:
-                                st.dataframe(df_type_sub[type_disp_cols], use_container_width=True, height=200)
-
-                st.markdown("---")
-
-            # B. Overall Repetitive Issue Details Table (Station ID, OCPP ID, Station Name, ZME, Sub-Type, Occurrences >= 2)
-            st.markdown("##### 📋 Overall Repetitive Issue Details Table (Occurrences ≥ 2)")
-            st.caption("Comprehensive breakdown of repetitive faults per Station ID, OCPP ID, Station Name, ZME & Issue Sub-Type:")
-
-            rep_group_cols = []
-            for c in [type_c, sub_c, stn_c, ocpp_c, stn_name_c, zme_c, zone_c]:
-                if c and c in selected_issues.columns and c not in rep_group_cols:
-                    rep_group_cols.append(c)
-
-            if rep_group_cols:
-                rep_details = selected_issues.groupby(rep_group_cols).size().reset_index(name='Occurrences')
-                rep_details = rep_details[rep_details['Occurrences'] >= 2].sort_values(by='Occurrences', ascending=False)
-
-                if not rep_details.empty:
-                    rename_dict = {
-                        type_c: 'Issue Type',
-                        sub_c: 'Issue Sub-Type',
-                        stn_c: 'Station ID',
-                        ocpp_c: 'OCPP ID',
-                        stn_name_c: 'Station Name',
-                        zme_c: 'ZME Name',
-                        zone_c: 'Zone'
-                    }
-                    disp_rep_df = rep_details.rename(columns={k: v for k, v in rename_dict.items() if k in rep_details.columns})
-                    st.dataframe(
-                        disp_rep_df.style.format({'Occurrences': '{:,}'}).background_gradient(subset=['Occurrences'], cmap='Reds'),
-                        use_container_width=True,
-                        height=350
-                    )
-                    st.caption(f"Showing **{len(disp_rep_df):,}** repetitive fault combinations (Occurrences ≥ 2)")
-                else:
-                    st.success("✅ Zero repetitive station faults found in current selection.")
-
-    # TAB 2: PM DASHBOARD (PM F-01 & PENDING GOVERNANCE)
-    with tab_pm:
-        st.markdown('<div class="section-header">🛠️ Preventive Maintenance (PM F-01) Analytics & PM Pending Governance</div>', unsafe_allow_html=True)
-        
-        # Sidebar Status Filter for PM Governance
-        st.sidebar.markdown("---")
-        st.sidebar.markdown("#### ⚡ PM Charger Status Scope")
-        pm_scope = st.sidebar.radio(
-            "PM Scope Filter:",
-            ["Live Chargers Only (Standard)", "All Chargers (Include Decom/Offline)"],
-            index=0,
-            key="pm_scope_filter"
+        # Apply ALL filters for exact export & display according to active user choices
+        filtered_for_export = apply_filters(
+            issue_df,
+            months=selected_months,
+            zones=selected_zones,
+            zmes=selected_zmes,
+            severity=selected_severity,
+            make=selected_make,
+            query=search_query
         )
 
-        base_pm = pm_df.copy() if not pm_df.empty else pd.DataFrame()
-        if not base_pm.empty and "Live Chargers Only" in pm_scope and 'stationStatus' in base_pm.columns:
-            base_pm = base_pm[base_pm['stationStatus'].astype(str).str.strip().str.upper() == 'LIVE']
+        active_filters_meta = {
+            'zones': ", ".join(selected_zones[:3]) if len(selected_zones) <= 3 else f"{len(selected_zones)} Selected",
+            'severity': selected_severity,
+            'make': selected_make,
+            'search': search_query if search_query else "None"
+        }
 
-        # Dynamic filtering based on selected months
-        selected_pm = base_pm[base_pm['month'].isin(selected_months)] if not base_pm.empty and selected_months else base_pm
-
-        # Dynamic KPI calculations for selected month(s)
-        total_chargers = len(selected_pm['ocppId'].dropna()) if not selected_pm.empty else 0
-        total_stations = selected_pm['stationId'].nunique() if not selected_pm.empty else 0
-        total_pm_planning = int(selected_pm['Is_PM_Planned'].sum()) if not selected_pm.empty else 0
-        pm_done = int(selected_pm['Is_PM_Done'].sum()) if not selected_pm.empty else 0
-        pm_pending = int(selected_pm['Is_PM_Pending'].sum()) if not selected_pm.empty else 0
-        advance_done = int(selected_pm['Advance PM Done'].sum()) if not selected_pm.empty else 0
-        pm_eff = (pm_done / total_pm_planning * 100) if total_pm_planning > 0 else 0.0
-
-        # PM KPI Cards Row (7 Cards dynamically updating with month selection)
-        p1, p2, p3, p4, p5, p6, p7 = st.columns(7)
-        with p1:
-            st.markdown(f'<div class="metric-card darkred"><div class="metric-label">Live Chargers</div><div class="metric-val">{total_chargers:,}</div><div class="metric-sub">OCPP ID Count</div></div>', unsafe_allow_html=True)
-        with p2:
-            st.markdown(f'<div class="metric-card grey"><div class="metric-label">Live Stations</div><div class="metric-val">{total_stations:,}</div><div class="metric-sub">Unique Sites</div></div>', unsafe_allow_html=True)
-        with p3:
-            st.markdown(f'<div class="metric-card green"><div class="metric-label">PM Planning</div><div class="metric-val">{total_pm_planning:,}</div><div class="metric-sub">Scheduled Orders</div></div>', unsafe_allow_html=True)
-        with p4:
-            st.markdown(f'<div class="metric-card green"><div class="metric-label">PM Done</div><div class="metric-val">{pm_done:,}</div><div class="metric-sub">Completed</div></div>', unsafe_allow_html=True)
-        with p5:
-            st.markdown(f'<div class="metric-card red"><div class="metric-label">PM Pending</div><div class="metric-val">{pm_pending:,}</div><div class="metric-sub">Scheduled Pending</div></div>', unsafe_allow_html=True)
-        with p6:
-            st.markdown(f'<div class="metric-card amber"><div class="metric-label">Advance PM Done</div><div class="metric-val">{advance_done:,}</div><div class="metric-sub">Early Completed</div></div>', unsafe_allow_html=True)
-        with p7:
-            st.markdown(f'<div class="metric-card {"green" if pm_eff >= 90 else "amber"}"><div class="metric-label">PM Efficiency %</div><div class="metric-val">{pm_eff:.1f}%</div><div class="metric-sub">Target: ≥ 90%</div></div>', unsafe_allow_html=True)
-
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        # 1. PM Execution Overview Bar & Table
-        st.markdown('<div class="section-header">📊 1. PM Execution Status & Pending Breakdown (Selected Months)</div>', unsafe_allow_html=True)
-        exec_df = pd.DataFrame({
-            'Metric': ['PM Planning', 'PM Done', 'PM Pending', 'Advance PM Done'],
-            'Count': [total_pm_planning, pm_done, pm_pending, advance_done]
-        })
-        
-        col_ex_c, col_ex_t = st.columns([7, 5])
-        with col_ex_c:
-            st.plotly_chart(
-                plot_interactive_bar(exec_df, 'Metric', 'Count', 'PM Work Orders Execution Distribution', '#991B1B'),
-                use_container_width=True
-            )
-        with col_ex_t:
-            st.write("##### PM Execution Summary Table")
-            exec_df['Share %'] = (exec_df['Count'] / total_pm_planning * 100).fillna(0.0).round(1) if total_pm_planning > 0 else 0.0
-            st.dataframe(
-                exec_df.style.format({'Count': '{:,}', 'Share %': '{:.1f}%'}).background_gradient(subset=['Count'], cmap='Reds'),
-                use_container_width=True, height=250
+        # Excel Report Download
+        with col_exp:
+            st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+            report_bytes = generate_issue_excel_report(filtered_for_export, issue_df, tuple(selected_months), active_filters_meta)
+            month_slug = "_".join(selected_months[:3]) if len(selected_months) <= 3 else f"{selected_months[0]}_to_{selected_months[-1]}"
+            st.download_button(
+                label="📥 Export Report with Charts (.xlsx)",
+                data=report_bytes,
+                file_name=f"ChargeZone_Issue_Tracker_{month_slug}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="flt_download_report_btn"
             )
 
-        st.markdown("---")
+    return selected_months, selected_zones, selected_zmes, selected_severity, selected_make, search_query
 
-        # 2. Zone PM Summary Table & Chart
-        st.markdown('<div class="section-header">🏢 2. Zone-wise PM Planning, Done & PM Pending (Selected Months)</div>', unsafe_allow_html=True)
-        if not selected_pm.empty:
-            zone_pm = selected_pm.groupby('zone').agg(
-                chargers=('ocppId', 'count'),
-                stations=('stationId', 'nunique'),
-                planning=('Is_PM_Planned', 'sum'),
-                done=('Is_PM_Done', 'sum'),
-                pending=('Is_PM_Pending', 'sum'),
-                advance=('Advance PM Done', 'sum')
-            ).reset_index()
-            zone_pm['PM Efficiency %'] = (zone_pm['done'] / zone_pm['planning'] * 100).round(1)
 
-            col_zp_c, col_zp_t = st.columns([6, 6])
-            with col_zp_c:
-                st.plotly_chart(
-                    plot_grouped_bar(
-                        zone_pm, x_col='zone',
-                        y_cols=['planning', 'done', 'pending', 'advance'],
-                        title="PM Planning vs PM Done vs PM Pending by Zone",
-                        colors=['#991B1B', '#16A34A', '#DC2626', '#EF4444']
-                    ), use_container_width=True
-                )
-            with col_zp_t:
-                st.write("##### Zone Summary Data Table")
-                st.dataframe(
-                    zone_pm.rename(columns={
-                        'zone': 'Zone', 'chargers': 'Chargers', 'stations': 'Stations',
-                        'planning': 'PM Planning', 'done': 'PM Done', 'pending': 'PM Pending',
-                        'advance': 'Advance PM'
-                    }).style.format({
-                        'Chargers': '{:,}', 'Stations': '{:,}', 'PM Planning': '{:,}',
-                        'PM Done': '{:,}', 'PM Pending': '{:,}', 'Advance PM': '{:,}',
-                        'PM Efficiency %': '{:.1f}%'
-                    }).background_gradient(subset=['PM Pending', 'PM Efficiency %'], cmap='Reds'),
-                    use_container_width=True, height=280
-                )
+def apply_filters(df, months, zones, zmes, severity, make, query):
+    """Apply all active filters to the issue dataframe."""
+    if df.empty:
+        return df
 
-        st.markdown("---")
+    filtered = df.copy()
+    if months:
+        filtered = filtered[filtered['month'].isin(months)]
+    if zones:
+        filtered = filtered[filtered['zone'].isin(zones)]
+    if zmes:
+        filtered = filtered[filtered['zme'].isin(zmes)]
+    if severity and severity != 'All':
+        filtered = filtered[filtered['severity'] == severity]
+    if make and make != 'All':
+        filtered = filtered[filtered['chargerMake'] == make]
 
-        # 3. Customer Segment Breakdown (B2B / B2C)
-        st.markdown('<div class="section-header">👥 3. Customer Segment Breakdown (B2B / B2C)</div>', unsafe_allow_html=True)
-        if not selected_pm.empty and 'segment' in selected_pm.columns:
-            seg_pm = selected_pm.groupby('segment').agg(
-                Chargers=('ocppId', 'count'),
-                Stations=('stationId', 'nunique'),
-                Planned=('Is_PM_Planned', 'sum'),
-                Done=('Is_PM_Done', 'sum'),
-                Pending=('Is_PM_Pending', 'sum'),
-            ).reset_index()
-            seg_pm['PM Efficiency %'] = (seg_pm['Done'] / seg_pm['Planned'] * 100).fillna(0.0).round(1)
+    if query and str(query).strip():
+        q = str(query).strip().lower()
+        search_mask = (
+            filtered['issueId'].astype(str).str.lower().str.contains(q) |
+            filtered['stationId'].astype(str).str.lower().str.contains(q) |
+            filtered['stationName'].astype(str).str.lower().str.contains(q) |
+            filtered['ocppId'].astype(str).str.lower().str.contains(q) |
+            filtered['description'].astype(str).str.lower().str.contains(q) |
+            filtered['issueType'].astype(str).str.lower().str.contains(q) |
+            filtered['issueSubType'].astype(str).str.lower().str.contains(q) |
+            filtered['zme'].astype(str).str.lower().str.contains(q)
+        )
+        filtered = filtered[search_mask]
 
-            col_seg_c, col_seg_t = st.columns([6, 6])
-            with col_seg_c:
-                st.plotly_chart(
-                    plot_donut_chart(seg_pm['segment'].tolist(), seg_pm['Planned'].tolist(), 'PM Planned Distribution by Customer Segment'),
-                    use_container_width=True
-                )
-            with col_seg_t:
-                st.write("##### Customer Segment PM Summary Data Table")
-                st.dataframe(
-                    seg_pm.rename(columns={'segment': 'Customer Segment'}).style.format({
-                        'Chargers': '{:,}', 'Stations': '{:,}', 'Planned': '{:,}',
-                        'Done': '{:,}', 'Pending': '{:,}', 'PM Efficiency %': '{:.1f}%'
-                    }).background_gradient(subset=['Pending', 'PM Efficiency %'], cmap='Reds'),
-                    use_container_width=True, height=250
-                )
+    return filtered
 
-        st.markdown("---")
 
-        # 4. Detailed ZME PM Table
-        st.markdown('<div class="section-header">⚙️ 4. Detailed PM Summary by ZME (Selected Months)</div>', unsafe_allow_html=True)
-        zme_pm_table = compute_zme_pm_table(base_pm, selected_months)
-        if not zme_pm_table.empty:
-            st.dataframe(
-                zme_pm_table.rename(columns={
-                    'zme': 'ZME Name', 'zone': 'Zone', 'total_chargers': 'Total Chargers',
-                    'total_stations': 'Total Stations', 'planning': 'PM Planning',
-                    'done': 'PM Done', 'pending': 'PM Pending', 'advance': 'Advance PM',
-                    'pm_efficiency': 'PM Efficiency (%)'
-                }).style.format({
-                    'Total Chargers': '{:,}', 'Total Stations': '{:,}', 'PM Planning': '{:,}',
-                    'PM Done': '{:,}', 'PM Pending': '{:,}', 'Advance PM': '{:,}',
-                    'PM Efficiency (%)': '{:.1f}%'
-                }).background_gradient(subset=['PM Pending', 'PM Efficiency (%)'], cmap='Reds'),
-                use_container_width=True, height=320
-            )
+# ─── View 1: Executive Analytics ──────────────────────────────────────────────
 
-        st.markdown("---")
+def render_executive_analytics(filtered_df, full_df):
+    """Render primary KPI cards and high-level analytical Plotly charts."""
+    st.markdown('<div class="section-header">📊 <span class="section-header-accent">Executive KPI</span> Summary</div>', unsafe_allow_html=True)
 
-        # 5. Period Breakdown (Week Range, Month, Quarter, Year, Date)
-        st.markdown('<div class="section-header">🗓️ 5. PM Scheduled Breakdown by Selection (Week Range, Month, Quarter, Year, Date)</div>', unsafe_allow_html=True)
-        if not selected_pm.empty:
-            period_choice = st.radio("Group PM Scheduled Stations by:", ["Schedule Week Range", "Month", "Quarter", "Year", "Date"], index=0, horizontal=True, key="pm_period_choice")
-            period_col_map = {
-                "Schedule Week Range": "scheduleWeekRange",
-                "Month": "Scheduled Month",
-                "Quarter": "Scheduled Quarter",
-                "Year": "Scheduled Year",
-                "Date": "Scheduled Date"
-            }
-            target_col = period_col_map[period_choice]
+    if filtered_df.empty:
+        st.warning("⚠️ No issue records match the selected filter criteria. Try broadening your filter selections.")
+        return
 
-            if target_col in selected_pm.columns:
-                group_cols = [target_col]
-                if target_col == 'scheduleWeekRange' and 'weekStartDate' in selected_pm.columns:
-                    group_cols.append('weekStartDate')
+    # ── 7 KPI Metrics ────────────────────────────────────────────────────────
+    total_issues = len(filtered_df)
+    total_open = int(filtered_df['_Is_Open_'].sum())
+    total_closed = int(filtered_df['_Is_Closed_'].sum())
+    closed_within = int(filtered_df['_Is_Closed_Within_'].sum())
+    closed_without = int(filtered_df['_Is_Closed_Without_'].sum())
+    overdue_count = int(filtered_df['_Is_Overdue_'].sum())
 
-                period_agg = selected_pm.groupby(group_cols, dropna=False).agg(
-                    stations=('stationId', 'nunique'),
-                    chargers=('ocppId', 'count'),
-                    planning=('Is_PM_Planned', 'sum'),
-                    done=('Is_PM_Done', 'sum'),
-                    pending=('Is_PM_Pending', 'sum'),
-                ).reset_index()
+    overall_cm_eff = (total_closed / total_issues * 100) if total_issues > 0 else 0.0
+    cm_tat_eff = (closed_within / total_issues * 100) if total_issues > 0 else 0.0
 
-                if target_col == 'scheduleWeekRange' and 'weekStartDate' in period_agg.columns:
-                    period_agg = period_agg.sort_values(by='weekStartDate', ascending=True)
+    kpi_html = f"""
+    <div class="kpi-grid">
+        <div class="metric-card darkred">
+            <div class="metric-header">
+                <span class="metric-label">Registered</span>
+                <span class="metric-icon">🗂️</span>
+            </div>
+            <div class="metric-val">{total_issues:,}</div>
+            <div class="metric-sub">Total Logged Faults</div>
+        </div>
+        <div class="metric-card amber">
+            <div class="metric-header">
+                <span class="metric-label">Active Open</span>
+                <span class="metric-icon">⏳</span>
+            </div>
+            <div class="metric-val">{total_open:,}</div>
+            <div class="metric-sub">
+                <span class="metric-badge {'red' if overdue_count > 0 else 'green'}">{overdue_count} Overdue</span>
+            </div>
+        </div>
+        <div class="metric-card blue">
+            <div class="metric-header">
+                <span class="metric-label">Resolved / Closed</span>
+                <span class="metric-icon">✅</span>
+            </div>
+            <div class="metric-val">{total_closed:,}</div>
+            <div class="metric-sub">Total Addressed</div>
+        </div>
+        <div class="metric-card green">
+            <div class="metric-header">
+                <span class="metric-label">Within TAT</span>
+                <span class="metric-icon">🟢</span>
+            </div>
+            <div class="metric-val">{closed_within:,}</div>
+            <div class="metric-sub">SLA Compliant</div>
+        </div>
+        <div class="metric-card red">
+            <div class="metric-header">
+                <span class="metric-label">Breached TAT</span>
+                <span class="metric-icon">🔴</span>
+            </div>
+            <div class="metric-val">{closed_without:,}</div>
+            <div class="metric-sub">SLA Violations</div>
+        </div>
+        <div class="metric-card {'green' if overall_cm_eff >= 85 else 'amber'}">
+            <div class="metric-header">
+                <span class="metric-label">Overall CM %</span>
+                <span class="metric-icon">📈</span>
+            </div>
+            <div class="metric-val">{overall_cm_eff:.2f}%</div>
+            <div class="metric-sub">Closure Rate</div>
+        </div>
+        <div class="metric-card {'green' if cm_tat_eff >= 80 else 'amber'}">
+            <div class="metric-header">
+                <span class="metric-label">TAT SLA %</span>
+                <span class="metric-icon">⚡</span>
+            </div>
+            <div class="metric-val">{cm_tat_eff:.2f}%</div>
+            <div class="metric-sub">Within TAT / Logged</div>
+        </div>
+    </div>
+    """
+    st.markdown(kpi_html, unsafe_allow_html=True)
 
-                period_agg['PM Efficiency %'] = (period_agg['done'] / period_agg['planning'] * 100).fillna(0.0).round(1)
+    # ── Charts Section 1: ZME Leaderboard & Zone Performance ─────────────────
+    st.markdown('<div class="section-header">👷 <span class="section-header-accent">Field Engineering</span> & Regional Performance</div>', unsafe_allow_html=True)
+    col_c1, col_c2 = st.columns([6, 6])
 
-                col_p_c, col_p_t = st.columns([6, 6])
-                with col_p_c:
-                    st.plotly_chart(
-                        plot_grouped_bar(
-                            period_agg, x_col=target_col,
-                            y_cols=['planning', 'done', 'pending'],
-                            title=f"PM Work Orders by {period_choice}",
-                            colors=['#991B1B', '#16A34A', '#DC2626']
-                        ), use_container_width=True
-                    )
-                with col_p_t:
-                    st.write(f"##### Scheduled Stations Data Table ({period_choice} Level)")
-                    disp_cols = [c for c in [target_col, 'stations', 'chargers', 'planning', 'done', 'pending', 'PM Efficiency %'] if c in period_agg.columns]
-                    st.dataframe(
-                        period_agg[disp_cols].rename(columns={
-                            target_col: f'Period ({period_choice})',
-                            'stations': 'Stations Scheduled', 'chargers': 'Chargers Scheduled',
-                            'planning': 'PM Planning (Count)', 'done': 'PM Done', 'pending': 'PM Pending'
-                        }).style.format({
-                            'Stations Scheduled': '{:,}', 'Chargers Scheduled': '{:,}',
-                            'PM Planning (Count)': '{:,}', 'PM Done': '{:,}', 'PM Pending': '{:,}',
-                            'PM Efficiency %': '{:.1f}%'
-                        }).background_gradient(subset=['PM Efficiency %'], cmap='Reds'),
-                        use_container_width=True, height=280
-                    )
-
-        st.markdown("---")
-
-        # 5. Export PM Planned & PM Done Data Tables
-        st.markdown('<div class="section-header">📥 5. Data Tables (PM Governance Tables)</div>', unsafe_allow_html=True)
-        if not selected_pm.empty:
-            sub_tab_planned, sub_tab_done, sub_tab_pending, sub_tab_adv = st.tabs([
-                "📋 PM Planned Table",
-                "✅ PM Done Table",
-                "⏳ PM Pending Table",
-                "⚡ Advance PM Done Table"
-            ])
-
-            with sub_tab_planned:
-                planned_records = selected_pm[selected_pm['Is_PM_Planned']].copy()
-                cols_p = [c for c in ['ocppId', 'zme', 'zone', 'stationId', 'stationName', 'scheduleWeek', 'scheduleWeekRange', 'weekStartDate', 'weekEndDate', 'month', 'PM Compliance Status'] if c in planned_records.columns]
-                disp_planned = planned_records[cols_p]
-                
-                c_p_info, c_p_dl = st.columns([8, 4])
-                with c_p_info:
-                    st.write(f"Showing **{len(planned_records):,}** PM Planned chargers for selected month(s):")
-                with c_p_dl:
-                    st.download_button(
-                        "📥 Download PM Planned CSV",
-                        data=disp_planned.to_csv(index=False).encode('utf-8'),
-                        file_name=f"PM_Planned_{month_slug}.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
-                st.dataframe(disp_planned, use_container_width=True, height=280)
-
-            with sub_tab_done:
-                done_records = selected_pm[selected_pm['Is_PM_Done']].copy()
-                cols_d = [c for c in ['ocppId', 'zme', 'zone', 'stationId', 'stationName', 'status', 'completionDate', 'scheduleWeekRange', 'month', 'PM Compliance Status'] if c in done_records.columns]
-                disp_done = done_records[cols_d]
-
-                c_d_info, c_d_dl = st.columns([8, 4])
-                with c_d_info:
-                    st.write(f"Showing **{len(done_records):,}** PM Done chargers for selected month(s):")
-                with c_d_dl:
-                    st.download_button(
-                        "📥 Download PM Done CSV",
-                        data=disp_done.to_csv(index=False).encode('utf-8'),
-                        file_name=f"PM_Done_{month_slug}.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
-                st.dataframe(disp_done, use_container_width=True, height=280)
-
-            with sub_tab_pending:
-                pending_records = selected_pm[selected_pm['Is_PM_Pending']].copy()
-                cols_pend = [c for c in ['ocppId', 'zme', 'zone', 'stationId', 'stationName', 'status', 'scheduleWeekRange', 'weekStartDate', 'weekEndDate', 'month', 'PM Compliance Status'] if c in pending_records.columns]
-                disp_pending = pending_records[cols_pend]
-
-                c_pend_info, c_pend_dl = st.columns([8, 4])
-                with c_pend_info:
-                    st.write(f"Showing **{len(pending_records):,}** PM Pending chargers for selected month(s):")
-                with c_pend_dl:
-                    st.download_button(
-                        "📥 Download PM Pending CSV",
-                        data=disp_pending.to_csv(index=False).encode('utf-8'),
-                        file_name=f"PM_Pending_{month_slug}.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
-                st.dataframe(disp_pending, use_container_width=True, height=280)
-
-            with sub_tab_adv:
-                adv_records = selected_pm[selected_pm['Advance PM Done']].copy()
-                cols_adv = [c for c in ['ocppId', 'zme', 'zone', 'stationId', 'stationName', 'status', 'completionDate', 'scheduleWeekRange', 'month', 'PM Compliance Status'] if c in adv_records.columns]
-                disp_adv = adv_records[cols_adv]
-
-                c_adv_info, c_adv_dl = st.columns([8, 4])
-                with c_adv_info:
-                    st.write(f"Showing **{len(adv_records):,}** Advance PM Done chargers for selected month(s):")
-                with c_adv_dl:
-                    st.download_button(
-                        "📥 Download Advance PM Done CSV",
-                        data=disp_adv.to_csv(index=False).encode('utf-8'),
-                        file_name=f"Advance_PM_Done_{month_slug}.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
-                st.dataframe(disp_adv, use_container_width=True, height=280)
-
-    # TAB 3: DATA EXPLORER
-    with tab_raw:
-        st.markdown('<div class="section-header">🔍 Raw Operational Data Explorer</div>', unsafe_allow_html=True)
-        dataset_choice = st.radio("Select Dataset:", ["Issue Tracker Dataset", "PM Tracker Dataset"], horizontal=True)
-
-        if dataset_choice == "Issue Tracker Dataset":
-            if not issue_df.empty:
-                st.write(f"Showing **{len(issue_df):,}** Issue records:")
-                st.dataframe(issue_df, use_container_width=True)
-            else:
-                st.info("Issue Tracker dataset is empty.")
+    with col_c1:
+        zme_agg = compute_zme_issue_table(filtered_df)
+        if not zme_agg.empty:
+            st.plotly_chart(plot_zme_sla_leaderboard(zme_agg, top_n=10), use_container_width=True)
         else:
-            if not pm_df.empty:
-                st.write(f"Showing **{len(pm_df):,}** PM records:")
-                st.dataframe(pm_df, use_container_width=True)
-            else:
-                st.info("PM Tracker dataset is empty.")
+            st.info("No ZME breakdown data available.")
+
+    with col_c2:
+        zone_agg = compute_zone_issue_table(filtered_df)
+        if not zone_agg.empty:
+            st.plotly_chart(plot_zone_efficiency_comparison(zone_agg), use_container_width=True)
+        else:
+            st.info("No Zone comparison data available.")
+
+    # ── Charts Section 2: Pipeline Donuts & Fault Trend ───────────────────────
+    st.markdown('<div class="section-header">📌 <span class="section-header-accent">Status Pipeline</span> & Trend Analytics</div>', unsafe_allow_html=True)
+    col_d1, col_d2, col_d3 = st.columns([4, 4, 4])
+
+    with col_d1:
+        status_counts = filtered_df['status'].value_counts()
+        colors_status = [PALETTE_STATUS.get(s, '#64748B') for s in status_counts.index]
+        fig_stat = plot_donut_chart(
+            labels=status_counts.index.tolist(),
+            values=status_counts.values.tolist(),
+            title="Ticket Status Pipeline",
+            subtitle="Current operational lifecycle distribution",
+            colors=colors_status,
+            center_text=f"{total_issues:,}<br><span style='font-size:10px;color:#64748B;'>TOTAL</span>"
+        )
+        st.plotly_chart(fig_stat, use_container_width=True)
+
+    with col_d2:
+        sla_labels = ['Within TAT', 'Breached TAT', 'Active Open']
+        sla_values = [closed_within, closed_without, total_open]
+        colors_sla = ['#10B981', '#EF4444', '#F59E0B']
+        fig_sla = plot_donut_chart(
+            labels=sla_labels,
+            values=sla_values,
+            title="SLA Compliance Distribution",
+            subtitle="Breakdown of target turnaround compliance",
+            colors=colors_sla,
+            center_text=f"{cm_tat_eff:.2f}%<br><span style='font-size:10px;color:#64748B;'>SLA RATE</span>"
+        )
+        st.plotly_chart(fig_sla, use_container_width=True)
+
+    with col_d3:
+        sev_counts = filtered_df['severity'].value_counts()
+        sev_colors = {'Critical': '#DC2626', 'Major': '#F59E0B', 'Minor': '#3B82F6'}
+        colors_sev = [sev_colors.get(s, '#64748B') for s in sev_counts.index]
+        fig_sev = plot_donut_chart(
+            labels=sev_counts.index.tolist(),
+            values=sev_counts.values.tolist(),
+            title="Severity Matrix",
+            subtitle="Fault distribution by incident criticality",
+            colors=colors_sev,
+            center_text=f"{len(sev_counts)}<br><span style='font-size:10px;color:#64748B;'>LEVELS</span>"
+        )
+        st.plotly_chart(fig_sev, use_container_width=True)
+
+    # ── Charts Section 3: Root Cause Pareto & OEM Reliability ────────────────
+    st.markdown('<div class="section-header">⚠️ <span class="section-header-accent">Failure Root Causes</span> & OEM Reliability</div>', unsafe_allow_html=True)
+    col_p1, col_p2 = st.columns([6, 6])
+
+    with col_p1:
+        fig_pareto = plot_pareto_root_causes(filtered_df, top_n=8)
+        if fig_pareto:
+            st.plotly_chart(fig_pareto, use_container_width=True)
+        else:
+            st.info("No category data available.")
+
+    with col_p2:
+        fig_oem = plot_charger_make_analysis(filtered_df)
+        if fig_oem:
+            st.plotly_chart(fig_oem, use_container_width=True)
+        else:
+            st.info("No charger OEM make data available.")
+
+    # ── Charts Section 4: Station Hotspots & Monthly Timeline ─────────────────
+    col_h1, col_h2 = st.columns([6, 6])
+
+    with col_h1:
+        fig_trend = plot_fault_trend_timeline(filtered_df)
+        if fig_trend:
+            st.plotly_chart(fig_trend, use_container_width=True)
+        else:
+            st.info("No date trend data available.")
+
+    with col_h2:
+        fig_hotspots = plot_station_hotspots(filtered_df, top_n=10)
+        if fig_hotspots:
+            st.plotly_chart(fig_hotspots, use_container_width=True)
+        else:
+            st.info("No station data available.")
+
+
+# ─── View 2: Repetitive Faults Analytics ──────────────────────────────────────
+
+def render_repetitive_faults_view(filtered_df):
+    """Render comprehensive repetitive faults analytics (Top 10 Overall & Top 20 by Station)."""
+    st.markdown('<div class="section-header">🔁 <span class="section-header-accent">Repetitive Faults</span> &amp; Root Cause Hotspots</div>', unsafe_allow_html=True)
+
+    if filtered_df.empty:
+        st.info("No issue records available for the active filters.")
+        return
+
+    top10_overall, top20_station = compute_top_repetitive_faults(filtered_df, top_overall=10, top_station=20)
+
+    # ── KPI Cards for Repetitive Faults ──────────────────────────────────────
+    total_incidents = len(filtered_df)
+    rep_faults_pool = filtered_df[filtered_df.duplicated(subset=['issueType', 'issueSubType'], keep=False)]
+    total_rep_count = len(rep_faults_pool)
+    top_rep_cause = top10_overall['issueSubType'].iloc[0] if not top10_overall.empty else 'N/A'
+    top_rep_cause_count = top10_overall['total_count'].iloc[0] if not top10_overall.empty else 0
+    top_station_hotspot = top20_station['stationName'].iloc[0] if not top20_station.empty else 'N/A'
+    top_station_count = top20_station['fault_count'].iloc[0] if not top20_station.empty else 0
+    overall_rep_sla = (top10_overall['within_tat'].sum() / top10_overall['total_count'].sum() * 100) if not top10_overall.empty and top10_overall['total_count'].sum() > 0 else 0.0
+
+    k1, k2, k3, k4 = st.columns(4)
+    with k1:
+        st.markdown(f"""
+            <div class="metric-card darkred">
+                <div class="metric-header">
+                    <span class="metric-label">Repetitive Incidents</span>
+                    <span class="metric-icon">🔁</span>
+                </div>
+                <div class="metric-val">{total_rep_count:,}</div>
+                <div class="metric-sub">{(total_rep_count/total_incidents*100):.2f}% of Total Network Faults</div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    with k2:
+        st.markdown(f"""
+            <div class="metric-card red">
+                <div class="metric-header">
+                    <span class="metric-label">#1 Failure Mode</span>
+                    <span class="metric-icon">⚠️</span>
+                </div>
+                <div class="metric-val" style="font-size: 1.35rem; line-height: 1.3;">{top_rep_cause}</div>
+                <div class="metric-sub"><b style="color:#DC2626;">{top_rep_cause_count:,}</b> Total Occurrences</div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    with k3:
+        st.markdown(f"""
+            <div class="metric-card amber">
+                <div class="metric-header">
+                    <span class="metric-label">#1 Station Hotspot</span>
+                    <span class="metric-icon">📍</span>
+                </div>
+                <div class="metric-val" style="font-size: 1.25rem; line-height: 1.3;">{str(top_station_hotspot)[:26]}...</div>
+                <div class="metric-sub"><b style="color:#D97706;">{top_station_count:,}</b> Repeated Incidents</div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    with k4:
+        st.markdown(f"""
+            <div class="metric-card blue">
+                <div class="metric-header">
+                    <span class="metric-label">Top Faults SLA %</span>
+                    <span class="metric-icon">⚡</span>
+                </div>
+                <div class="metric-val">{overall_rep_sla:.2f}%</div>
+                <div class="metric-sub">SLA Adherence on Top Faults</div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Tabs for Repetitive Views ────────────────────────────────────────────
+    tab_overall, tab_station, tab_drilldown = st.tabs([
+        f"🏆 Top 10 Overall Repetitive Faults ({len(top10_overall)})",
+        f"📍 Top 20 Repetitive Faults by Station ({len(top20_station)})",
+        "🔍 Incident Ticket Drilldown"
+    ])
+
+    with tab_overall:
+        if not top10_overall.empty:
+            col_g1, col_g2 = st.columns([6, 6])
+            with col_g1:
+                st.plotly_chart(plot_top10_overall_faults(top10_overall), use_container_width=True)
+            with col_g2:
+                st.write("##### 📋 Top 10 Overall Repetitive Faults Leaderboard")
+                disp_top10 = top10_overall.copy()
+                disp_top10['Rank'] = [f"#{i+1}" for i in range(len(disp_top10))]
+                disp_top10 = disp_top10[[
+                    'Rank', 'issueType', 'issueSubType', 'total_count', 'unique_stations',
+                    'unique_chargers', 'open_count', 'within_tat', 'breached_tat', 'tat_efficiency'
+                ]].rename(columns={
+                    'issueType': 'Category',
+                    'issueSubType': 'Fault Sub-Type',
+                    'total_count': 'Total Incidents',
+                    'unique_stations': 'Sites Impacted',
+                    'unique_chargers': 'Chargers Impacted',
+                    'open_count': 'Open',
+                    'within_tat': 'Within TAT',
+                    'breached_tat': 'Breached TAT',
+                    'tat_efficiency': 'SLA %'
+                })
+
+                st.dataframe(
+                    disp_top10.style.format({
+                        'Total Incidents': '{:,}',
+                        'Sites Impacted': '{:,}',
+                        'Chargers Impacted': '{:,}',
+                        'Open': '{:,}',
+                        'Within TAT': '{:,}',
+                        'Breached TAT': '{:,}',
+                        'SLA %': '{:.2f}%'
+                    }),
+                    use_container_width=True,
+                    height=360
+                )
+
+            csv_top10 = top10_overall.drop(columns=['fault_label'], errors='ignore').to_csv(index=False).encode('utf-8')
+            st.download_button(
+                "📥 Download Top 10 Overall Repetitive Faults CSV",
+                data=csv_top10,
+                file_name="Top10_Overall_Repetitive_Faults.csv",
+                mime="text/csv",
+                key="dl_top10_overall_csv"
+            )
+        else:
+            st.info("No repetitive fault patterns found.")
+
+    with tab_station:
+        if not top20_station.empty:
+            st.plotly_chart(plot_top20_station_faults(top20_station), use_container_width=True)
+
+            st.write("##### 📋 Top 20 Repetitive Faults by Stations Data Table")
+            disp_top20 = top20_station.copy()
+            disp_top20['Rank'] = [f"#{i+1}" for i in range(len(disp_top20))]
+            disp_top20 = disp_top20[[
+                'Rank', 'stationName', 'zone', 'zme', 'issueType', 'issueSubType',
+                'fault_count', 'open_count', 'within_tat', 'breached_tat', 'tat_efficiency'
+            ]].rename(columns={
+                'stationName': 'Station Name',
+                'zone': 'Zone',
+                'zme': 'Assigned ZME',
+                'issueType': 'Category',
+                'issueSubType': 'Fault Sub-Type',
+                'fault_count': 'Faults at Site',
+                'open_count': 'Open',
+                'within_tat': 'Within TAT',
+                'breached_tat': 'Breached TAT',
+                'tat_efficiency': 'Site SLA %'
+            })
+
+            st.dataframe(
+                disp_top20.style.format({
+                    'Faults at Site': '{:,}',
+                    'Open': '{:,}',
+                    'Within TAT': '{:,}',
+                    'Breached TAT': '{:,}',
+                    'Site SLA %': '{:.2f}%'
+                }),
+                use_container_width=True,
+                height=420
+            )
+
+            csv_top20 = top20_station.drop(columns=['station_fault_label'], errors='ignore').to_csv(index=False).encode('utf-8')
+            st.download_button(
+                "📥 Download Top 20 Station Repetitive Faults CSV",
+                data=csv_top20,
+                file_name="Top20_Station_Repetitive_Faults.csv",
+                mime="text/csv",
+                key="dl_top20_station_csv"
+            )
+        else:
+            st.info("No station repetitive fault data available.")
+
+    with tab_drilldown:
+        st.write("##### 🔍 Deep-Dive: Raw Incident Logs by Repetitive Fault Mode")
+        options_list = top10_overall['fault_label'].tolist() if not top10_overall.empty else []
+        if options_list:
+            selected_mode = st.selectbox("Select Fault Mode to Inspect Individual Tickets:", options_list, index=0, key="drilldown_fault_mode")
+            cat_selected, sub_selected = selected_mode.split(' — ', 1)
+            drill_df = filtered_df[(filtered_df['issueType'] == cat_selected) & (filtered_df['issueSubType'] == sub_selected)].copy()
+
+            st.write(f"Displaying **{len(drill_df):,}** individual tickets logged for **{selected_mode}**:")
+            disp_drill_cols = [
+                'issueId', 'ocppId', 'stationName', 'zone', 'zme', 'severity', 'status',
+                'issueDate', 'resolutionDate', 'tatCompliance', 'ageOfIssue', 'description', 'correctiveAction'
+            ]
+            cols = [c for c in disp_drill_cols if c in drill_df.columns]
+            st.dataframe(drill_df[cols], use_container_width=True, height=360)
+
+            csv_drill = drill_df[cols].to_csv(index=False).encode('utf-8')
+            st.download_button(
+                f"📥 Download Tickets for '{selected_mode}' CSV",
+                data=csv_drill,
+                file_name=f"Tickets_{cat_selected}_{sub_selected}.csv",
+                mime="text/csv",
+                key="dl_drilldown_csv"
+            )
+
+
+# ─── View 3: Critical & SLA Breached Triage ───────────────────────────────────
+
+def render_critical_and_breached_view(filtered_df):
+    """Focused triage view for high-priority, overdue, and SLA-breached tickets."""
+    st.markdown('<div class="section-header">🚨 <span class="section-header-accent">Critical &amp; SLA Breached</span> Incident Triage</div>', unsafe_allow_html=True)
+
+    if filtered_df.empty:
+        st.info("No records matching current filters.")
+        return
+
+    crit_df = filtered_df[filtered_df['severity'] == 'Critical']
+    overdue_df = filtered_df[filtered_df['_Is_Overdue_']]
+    breached_closed_df = filtered_df[filtered_df['_Is_Closed_Without_']]
+    all_sla_risk = filtered_df[filtered_df['_Is_Overdue_'] | filtered_df['_Is_Closed_Without_'] | (filtered_df['severity'] == 'Critical')]
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown(f"""
+            <div class="metric-card red">
+                <div class="metric-header">
+                    <span class="metric-label">Active Overdue</span>
+                    <span class="metric-icon">⏰</span>
+                </div>
+                <div class="metric-val">{len(overdue_df):,}</div>
+                <div class="metric-sub">Open Beyond Target TAT</div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    with c2:
+        st.markdown(f"""
+            <div class="metric-card darkred">
+                <div class="metric-header">
+                    <span class="metric-label">Critical Faults</span>
+                    <span class="metric-icon">🔥</span>
+                </div>
+                <div class="metric-val">{len(crit_df):,}</div>
+                <div class="metric-sub">High Priority Severity</div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    with c3:
+        st.markdown(f"""
+            <div class="metric-card amber">
+                <div class="metric-header">
+                    <span class="metric-label">Closed Breached</span>
+                    <span class="metric-icon">⚠️</span>
+                </div>
+                <div class="metric-val">{len(breached_closed_df):,}</div>
+                <div class="metric-sub">Closed Past SLA Window</div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    with c4:
+        st.markdown(f"""
+            <div class="metric-card blue">
+                <div class="metric-header">
+                    <span class="metric-label">Total SLA Attention</span>
+                    <span class="metric-icon">🛡️</span>
+                </div>
+                <div class="metric-val">{len(all_sla_risk):,}</div>
+                <div class="metric-sub">Critical / Breached Pool</div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    tab_overdue, tab_crit, tab_breached = st.tabs([
+        f"⏰ Active Overdue ({len(overdue_df)})",
+        f"🔥 Critical Faults ({len(crit_df)})",
+        f"⚠️ Closed Breached ({len(breached_closed_df)})"
+    ])
+
+    disp_cols = [
+        'issueId', 'ocppId', 'stationName', 'zone', 'zme', 'severity', 'status',
+        'issueType', 'issueSubType', 'issueDate', 'tdoc', 'ageOfIssue', 'tatDays', 'description'
+    ]
+
+    with tab_overdue:
+        if not overdue_df.empty:
+            cols = [c for c in disp_cols if c in overdue_df.columns]
+            st.dataframe(
+                overdue_df[cols].rename(columns={
+                    'issueId': 'Issue ID', 'ocppId': 'Charger ID', 'stationName': 'Station Name',
+                    'zone': 'Zone', 'zme': 'ZME', 'severity': 'Severity', 'status': 'Status',
+                    'issueType': 'Category', 'issueSubType': 'Sub-Type', 'issueDate': 'Issue Date',
+                    'tdoc': 'Target Date (TDOC)', 'ageOfIssue': 'Age (Days)', 'tatDays': 'Allowed TAT',
+                    'description': 'Description'
+                }),
+                use_container_width=True,
+                height=360
+            )
+            csv_overdue = overdue_df[cols].to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Download Overdue Tickets CSV", data=csv_overdue, file_name="Overdue_Issues.csv", mime="text/csv", key="dl_overdue_csv")
+        else:
+            st.success("🎉 No active overdue tickets! All open issues are within target SLA.")
+
+    with tab_crit:
+        if not crit_df.empty:
+            cols = [c for c in disp_cols if c in crit_df.columns]
+            st.dataframe(
+                crit_df[cols].rename(columns={
+                    'issueId': 'Issue ID', 'ocppId': 'Charger ID', 'stationName': 'Station Name',
+                    'zone': 'Zone', 'zme': 'ZME', 'severity': 'Severity', 'status': 'Status',
+                    'issueType': 'Category', 'issueSubType': 'Sub-Type', 'issueDate': 'Issue Date',
+                    'tdoc': 'Target Date (TDOC)', 'ageOfIssue': 'Age (Days)', 'tatDays': 'Allowed TAT',
+                    'description': 'Description'
+                }),
+                use_container_width=True,
+                height=360
+            )
+            csv_crit = crit_df[cols].to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Download Critical Issues CSV", data=csv_crit, file_name="Critical_Issues.csv", mime="text/csv", key="dl_crit_csv")
+        else:
+            st.info("No critical severity issues recorded in the current selection.")
+
+    with tab_breached:
+        if not breached_closed_df.empty:
+            cols = [c for c in disp_cols if c in breached_closed_df.columns]
+            st.dataframe(
+                breached_closed_df[cols].rename(columns={
+                    'issueId': 'Issue ID', 'ocppId': 'Charger ID', 'stationName': 'Station Name',
+                    'zone': 'Zone', 'zme': 'ZME', 'severity': 'Severity', 'status': 'Status',
+                    'issueType': 'Category', 'issueSubType': 'Sub-Type', 'issueDate': 'Issue Date',
+                    'tdoc': 'Target Date (TDOC)', 'ageOfIssue': 'Age (Days)', 'tatDays': 'Allowed TAT',
+                    'description': 'Description'
+                }),
+                use_container_width=True,
+                height=360
+            )
+            csv_breached = breached_closed_df[cols].to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Download Closed Breached CSV", data=csv_breached, file_name="Closed_Breached_Issues.csv", mime="text/csv", key="dl_breached_csv")
+        else:
+            st.success("🎉 No SLA-breached closures in the current selection.")
+
+
+# ─── View 4: ZME & Zone Governance Scorecard ──────────────────────────────────
+
+def render_governance_scorecard(filtered_df):
+    """Detailed scorecards and rankings for ZMEs and Zones."""
+    st.markdown('<div class="section-header">👷 <span class="section-header-accent">Field Engineering</span> Governance &amp; Scorecards</div>', unsafe_allow_html=True)
+
+    if filtered_df.empty:
+        st.info("No data available for governance scorecard.")
+        return
+
+    tab_zme, tab_zone = st.tabs(["👷 ZME Scorecard Leaderboard", "🏢 Zone Regional Governance"])
+
+    with tab_zme:
+        zme_table = compute_zme_issue_table(filtered_df)
+        if not zme_table.empty:
+            st.write(f"Showing performance metrics for **{len(zme_table)}** Zone Maintenance Engineers:")
+            zme_disp = zme_table.rename(columns={
+                'zme': 'ZME Engineer',
+                'zone': 'Zone',
+                'total': 'Registered',
+                'open': 'Open',
+                'closed': 'Closed',
+                'within': 'Within TAT',
+                'outside': 'Breached TAT',
+                'overdue': 'Overdue',
+                'critical': 'Critical',
+                'cm_efficiency': 'CM Eff %',
+                'tat_efficiency': 'SLA %'
+            })
+            st.dataframe(
+                zme_disp.style.format({
+                    'Registered': '{:,}',
+                    'Open': '{:,}',
+                    'Closed': '{:,}',
+                    'Within TAT': '{:,}',
+                    'Breached TAT': '{:,}',
+                    'Overdue': '{:,}',
+                    'Critical': '{:,}',
+                    'CM Eff %': '{:.2f}%',
+                    'SLA %': '{:.2f}%'
+                }),
+                use_container_width=True,
+                height=420
+            )
+
+            csv_zme = zme_table.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Download ZME Scorecard CSV", data=csv_zme, file_name="ZME_Performance_Scorecard.csv", mime="text/csv", key="dl_zme_csv")
+        else:
+            st.info("No ZME records available.")
+
+    with tab_zone:
+        zone_table = compute_zone_issue_table(filtered_df)
+        if not zone_table.empty:
+            st.write(f"Showing regional performance across **{len(zone_table)}** Zones:")
+            zone_disp = zone_table.rename(columns={
+                'zone': 'Zone / Region',
+                'total': 'Total Registered',
+                'open': 'Open',
+                'closed': 'Closed',
+                'within': 'Within TAT',
+                'outside': 'Breached TAT',
+                'overdue': 'Overdue',
+                'zme_count': 'ZME Count',
+                'station_count': 'Impacted Sites',
+                'cm_efficiency': 'CM Eff %',
+                'tat_efficiency': 'SLA %'
+            })
+            st.dataframe(
+                zone_disp.style.format({
+                    'Total Registered': '{:,}',
+                    'Open': '{:,}',
+                    'Closed': '{:,}',
+                    'Within TAT': '{:,}',
+                    'Breached TAT': '{:,}',
+                    'Overdue': '{:,}',
+                    'ZME Count': '{:,}',
+                    'Impacted Sites': '{:,}',
+                    'CM Eff %': '{:.2f}%',
+                    'SLA %': '{:.2f}%'
+                }),
+                use_container_width=True,
+                height=340
+            )
+
+            csv_zone = zone_table.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Download Zone Scorecard CSV", data=csv_zone, file_name="Zone_Performance_Summary.csv", mime="text/csv", key="dl_zone_csv")
+        else:
+            st.info("No Zone data available.")
+
+
+# ─── View 5: Issue Explorer ───────────────────────────────────────────────────
+
+def render_issue_explorer(filtered_df):
+    """Raw issue data grid with custom column selector and filtering."""
+    st.markdown('<div class="section-header">📋 <span class="section-header-accent">Issue Tracker</span> Data Explorer</div>', unsafe_allow_html=True)
+
+    if filtered_df.empty:
+        st.info("No issue records loaded or matching current filters.")
+        return
+
+    st.write(f"Displaying **{len(filtered_df):,}** operational issue records matching active filters:")
+
+    all_cols = [c for c in filtered_df.columns if not c.startswith('_')]
+    default_cols = [
+        'issueId', 'ocppId', 'stationName', 'zone', 'zme', 'severity', 'status',
+        'issueType', 'issueSubType', 'issueDate', 'resolutionDate', 'tatCompliance', 'ageOfIssue', 'chargerMake'
+    ]
+    selected_cols = st.multiselect(
+        "Select columns to display:",
+        all_cols,
+        default=[c for c in default_cols if c in all_cols],
+        key="exp_col_picker"
+    )
+
+    disp_cols = selected_cols if selected_cols else all_cols
+    st.dataframe(filtered_df[disp_cols], use_container_width=True, height=480)
+
+    csv_data = filtered_df[disp_cols].to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="📥 Download Filtered Issues CSV",
+        data=csv_data,
+        file_name="Filtered_Issues_Data.csv",
+        mime="text/csv",
+        key="dl_explorer_csv"
+    )
+
+
+# ─── View 6: Data Upload & Validation ─────────────────────────────────────────
+
+def render_data_upload():
+    """Upload and validate Issue Tracker workbooks."""
+    st.markdown('<div class="section-header">📤 <span class="section-header-accent">Issue Tracker</span> Workbook Upload</div>', unsafe_allow_html=True)
+
+    st.markdown("""
+        <p style="color: #475569; font-size: 0.98rem; margin-bottom: 1.5rem; line-height: 1.6;">
+            Upload your operational <b>Issue Tracker (F-02-MAINT-001)</b> workbook in <code>.xlsx</code> format.
+            The system automatically parses all fields including SLA compliance, ZME allocations, resolution timestamps, and root causes.
+        </p>
+    """, unsafe_allow_html=True)
+
+    st.markdown("""
+        <div class="upload-card">
+            <div style="font-size: 3.4rem; margin-bottom: 0.6rem;">🗂️</div>
+            <h3 style="color: #991B1B !important; margin-bottom: 0.3rem;">F-02 Issue Tracker Upload</h3>
+            <p style="color: #64748B; font-size: 0.90rem; max-width: 580px; margin: 0 auto 1.2rem; line-height: 1.5;">
+                Expected worksheet: <b>Issue Tracker</b> with columns like <code>Issue Id</code>, <code>OCPP ID</code>,
+                <code>Issue Date</code>, <code>Severity</code>, <code>Status</code>, <code>ZME</code>, <code>Zone</code>,
+                <code>TAT Compliance</code>, and <code>Charger Make</code>.
+            </p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    issue_file = st.file_uploader(
+        "Upload Issue Tracker (.xlsx)",
+        type=["xlsx"],
+        key="upload_issue_file_tab",
+        label_visibility="collapsed"
+    )
+
+    if issue_file:
+        st.session_state['uploaded_issue_bytes'] = issue_file.getvalue()
+        st.session_state['uploaded_file_name'] = issue_file.name
+        st.success(f"✅ **{issue_file.name}** uploaded successfully ({issue_file.size // 1024:,} KB). Parsing...")
+        st.rerun()
+
+    # Column Mapping Preview
+    uploaded_bytes = st.session_state.get('uploaded_issue_bytes')
+    if uploaded_bytes:
+        st.markdown('<div class="section-header">🔍 <span class="section-header-accent">Column Mapping</span> Validation</div>', unsafe_allow_html=True)
+        try:
+            wb = openpyxl.load_workbook(BytesIO(uploaded_bytes), read_only=True, data_only=True)
+            sheet_names = wb.sheetnames
+            sheet_target = select_sheet_name(sheet_names, ['Issue Tracker', 'Issue Data'], 'issue')
+            ws = wb[sheet_target]
+            rows = list(ws.iter_rows(values_only=True, max_row=5))
+            wb.close()
+
+            if rows:
+                headers = []
+                for r in rows:
+                    if r and any(c is not None for c in r):
+                        headers = [str(c).strip() for c in r if c is not None]
+                        break
+
+                expected_cols = [
+                    'Issue Id', 'OCPP ID', 'Severity', 'Issue Date', 'Status', 'Issue Type',
+                    'Issue Sub-Type', 'Resolution Date', 'Zone', 'ZME', 'Station Name',
+                    'TAT Days', 'TDOC', 'TAT Compliance', 'Charger Make'
+                ]
+
+                mapping_records = []
+                for h in headers:
+                    norm_h = norm_header(h)
+                    match_found = next((e for e in expected_cols if norm_header(e) in norm_h or norm_h in norm_header(e)), None)
+                    mapping_records.append({
+                        'Detected Column in File': h,
+                        'System Field Match': f"✅ {match_found}" if match_found else "—"
+                    })
+
+                map_df = pd.DataFrame(mapping_records)
+                st.dataframe(map_df, use_container_width=True, height=280)
+        except Exception as e:
+            st.warning(f"Could not preview column mapping: {e}")
+
+
+# ─── Main Application Entry Point ─────────────────────────────────────────────
+
+def main():
+    inject_modern_css()
+    active_nav = render_header_and_nav()
+
+    # Data Loader strictly from user upload
+    uploaded_bytes = st.session_state.get('uploaded_issue_bytes')
+    issue_df = load_issue_data(uploaded_bytes)
+
+    if active_nav == "📤 Data Upload & Validation":
+        render_data_upload()
+        return
+
+    # Onboarding View when no file is uploaded yet
+    if issue_df.empty:
+        st.markdown("""
+            <div style="background: #FFFFFF; border: 1.5px solid #FEE2E2; border-radius: 20px;
+                        padding: 3rem 2.5rem; text-align: center; margin-top: 1rem;
+                        box-shadow: 0 8px 24px rgba(153,27,27,0.06);">
+                <div style="font-size: 3.5rem; margin-bottom: 0.6rem;">⚡</div>
+                <h2 style="color: #991B1B !important; font-weight: 900; margin-bottom: 0.5rem; font-size: 1.85rem;">
+                    Upload Issue Tracker Workbook
+                </h2>
+                <p style="color: #475569 !important; font-size: 1.02rem; max-width: 580px; margin: 0 auto 1.5rem; line-height: 1.6;">
+                    Upload your <b>F-02-MAINT-001 Issue Tracker</b> spreadsheet (<code>.xlsx</code>) below to generate real-time SLA governance, field engineering scorecards, and failure analytics.
+                </p>
+            </div>
+        """, unsafe_allow_html=True)
+
+        col_u_l, col_u_m, col_u_r = st.columns([2, 8, 2])
+        with col_u_m:
+            main_uploaded_file = st.file_uploader(
+                "Upload Issue Tracker (.xlsx)",
+                type=["xlsx"],
+                key="main_home_uploader",
+                help="Select or drag and drop your F-02-MAINT-001 Issue Tracker Excel file"
+            )
+            if main_uploaded_file:
+                st.session_state['uploaded_issue_bytes'] = main_uploaded_file.getvalue()
+                st.session_state['uploaded_file_name'] = main_uploaded_file.name
+                st.rerun()
+
+            if os.path.exists('Issue_Tracker.xlsx'):
+                st.markdown("<div style='text-align: center; margin-top: 0.8rem; margin-bottom: 0.8rem; color: #64748B; font-weight: 600; font-size: 0.85rem;'>— OR —</div>", unsafe_allow_html=True)
+                if st.button("⚡ Load Workspace Sample Dataset (Issue_Tracker.xlsx)", key="btn_load_workspace_sample", use_container_width=True):
+                    with open('Issue_Tracker.xlsx', 'rb') as f:
+                        st.session_state['uploaded_issue_bytes'] = f.read()
+                        st.session_state['uploaded_file_name'] = 'Issue_Tracker.xlsx'
+                    st.rerun()
+        return
+
+    # Loaded File Status Header
+    file_name = st.session_state.get('uploaded_file_name', 'Issue_Tracker.xlsx (Workspace Dataset)')
+    col_info, col_reset = st.columns([10, 2])
+    with col_info:
+        st.markdown(f"""
+            <div style="font-size: 0.85rem; color: #475569; font-weight: 600; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 8px;">
+                <span>📁 Active File: <b style="color: #0F172A;">{file_name}</b> ({len(issue_df):,} records loaded)</span>
+            </div>
+        """, unsafe_allow_html=True)
+    with col_reset:
+        if st.button("🔄 Upload New File", key="btn_change_file", use_container_width=True):
+            st.session_state.pop('uploaded_issue_bytes', None)
+            st.session_state.pop('uploaded_file_name', None)
+            st.rerun()
+
+    # Filter Toolbar
+    selected_months, selected_zones, selected_zmes, selected_sev, selected_make, search_q = render_filter_toolbar(issue_df)
+
+    # Filtered Dataset
+    filtered_df = apply_filters(
+        issue_df,
+        months=selected_months,
+        zones=selected_zones,
+        zmes=selected_zmes,
+        severity=selected_sev,
+        make=selected_make,
+        query=search_q
+    )
+
+    # Route Views
+    if active_nav == "📊 Executive Analytics":
+        render_executive_analytics(filtered_df, issue_df)
+
+    elif active_nav == "🔁 Repetitive Faults":
+        render_repetitive_faults_view(filtered_df)
+
+    elif active_nav == "🚨 Critical & SLA Breached":
+        render_critical_and_breached_view(filtered_df)
+
+    elif active_nav == "👷 ZME & Zone Governance":
+        render_governance_scorecard(filtered_df)
+
+    elif active_nav == "📋 Issue Explorer":
+        render_issue_explorer(filtered_df)
 
 
 if __name__ == '__main__':
