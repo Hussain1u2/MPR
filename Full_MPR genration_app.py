@@ -491,7 +491,7 @@ def generate_issue_excel_report(filtered_df, full_df, months_list, active_filter
 
         period_str = ', '.join(months_list) if months_list else 'All Recorded Months'
         if active_filters_info and isinstance(active_filters_info, dict):
-            filter_summary_str = f"Months: {period_str} | Zones: {active_filters_info.get('zones', 'All')} | Severity: {active_filters_info.get('severity', 'All')} | Make: {active_filters_info.get('make', 'All')}"
+            filter_summary_str = f"Months: {period_str} | States: {active_filters_info.get('states', 'All')} | Zones: {active_filters_info.get('zones', 'All')} | Make: {active_filters_info.get('make', 'All')}"
         else:
             filter_summary_str = period_str
 
@@ -1101,13 +1101,22 @@ def plot_pareto_root_causes(df, top_n=8):
 
 
 def plot_charger_make_analysis(df):
-    """Plot fault count distribution across charger OEMs / Makes."""
+    """Plot fault count distribution across charger OEMs / Makes for Charger & Charger_Software issues only."""
     if df.empty or 'chargerMake' not in df.columns:
         return None
 
-    make_df = df[df['chargerMake'].notna() & (df['chargerMake'] != 'Unknown') & (df['chargerMake'] != '')].copy()
+    make_df = df[df['chargerMake'].notna() & (df['chargerMake'] != 'Unknown') & (df['chargerMake'] != '') & (df['chargerMake'] != 'None')].copy()
+    
+    # Filter ONLY for Charger & Charger_Software issue types
+    if 'issueType' in make_df.columns:
+        valid_types = ['Charger', 'Charger Software', 'Charger_Software']
+        make_df = make_df[make_df['issueType'].astype(str).str.strip().isin(valid_types)]
+
     if make_df.empty:
         return None
+
+    # Normalize charger OEM names (e.g. EXICOM -> Exicom)
+    make_df['chargerMake'] = make_df['chargerMake'].astype(str).str.strip().str.title()
 
     make_agg = make_df.groupby('chargerMake').agg(
         Total=('issueId', 'count'),
@@ -1141,7 +1150,7 @@ def plot_charger_make_analysis(df):
 
     layout = _modern_layout(
         title="Charger OEM Reliability & SLA Adherence",
-        subtitle="Fault volume and resolution breakdown by Charger Manufacturer",
+        subtitle="Fault volume and resolution breakdown for Charger & Charger_Software issues by OEM",
         height=360
     )
     layout.update(dict(
@@ -1181,6 +1190,166 @@ def plot_station_hotspots(df, top_n=10):
     layout.update(dict(
         xaxis=dict(title=None, showgrid=True, gridcolor="#F1F5F9"),
         yaxis=dict(title=None, showgrid=False, autorange=True)
+    ))
+    fig.update_layout(**layout)
+    return fig
+
+
+def plot_top_issue_types_barchart(df_types):
+    """Plot vertical bar chart for Top 10 Overall Repetitive Issue Types."""
+    if df_types.empty:
+        return None
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=df_types['Issue Type'],
+        y=df_types['Total_Faults'],
+        name='Total Faults',
+        marker=dict(
+            color='#991B1B',
+            line=dict(color='#7F1D1D', width=1)
+        ),
+        text=df_types['Total_Faults'],
+        textposition='outside',
+        textfont=dict(size=11, weight='bold', color='#1E293B'),
+        hovertemplate='<b>%{x}</b><br>Total Faults: <b>%{y:,}</b><extra></extra>'
+    ))
+
+    layout = _modern_layout(
+        title="Top 10 Overall Repetitive Issue Types",
+        subtitle="Network-wide fault count aggregated by equipment category",
+        height=350
+    )
+    layout.update(dict(
+        xaxis=dict(title="issueType", showgrid=False, tickangle=-15),
+        yaxis=dict(title="Total_Faults", showgrid=True, gridcolor="#F1F5F9")
+    ))
+    fig.update_layout(**layout)
+    return fig
+
+
+def plot_top_subtypes_barchart(df_subtypes, cat_name):
+    """Plot vertical bar chart for Top 5 Sub-Types of a selected Issue Type or Station."""
+    if df_subtypes.empty:
+        return None
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=df_subtypes['Issue Sub-Type'],
+        y=df_subtypes['Subtype_Count'],
+        name='Sub-Type Count',
+        marker=dict(
+            color='#DC2626',
+            line=dict(color='#B91C1C', width=1)
+        ),
+        text=df_subtypes['Subtype_Count'],
+        textposition='outside',
+        textfont=dict(size=11, weight='bold', color='#1E293B'),
+        hovertemplate=f'<b>{cat_name}</b> - %{{x}}<br>Occurrences: <b>%{{y:,}}</b><extra></extra>'
+    ))
+
+    layout = _modern_layout(
+        title=f"Top 5 Sub-Types for '{str(cat_name)[:28]}'",
+        subtitle=f"Most frequent failure sub-types under {str(cat_name)[:28]}",
+        height=320
+    )
+    layout.update(dict(
+        xaxis=dict(title="IssueSubType", showgrid=False, tickangle=-15),
+        yaxis=dict(title="Subtype_Count", showgrid=True, gridcolor="#F1F5F9")
+    ))
+    fig.update_layout(**layout)
+    return fig
+
+
+def plot_top_stations_barchart(df_top_stations):
+    """Plot vertical bar chart for Top Station Hotspots."""
+    if df_top_stations.empty:
+        return None
+
+    df_top10 = df_top_stations.head(10).copy()
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=df_top10['stationName'].apply(lambda s: str(s)[:20] + '...' if len(str(s)) > 22 else str(s)),
+        y=df_top10['fault_count'],
+        name='Fault Count',
+        marker=dict(
+            color='#DC2626',
+            line=dict(color='#B91C1C', width=1)
+        ),
+        text=df_top10['fault_count'],
+        textposition='outside',
+        textfont=dict(size=11, weight='bold', color='#1E293B'),
+        hovertemplate='<b>%{x}</b><br>Faults at Site: <b>%{y:,}</b><extra></extra>'
+    ))
+
+    layout = _modern_layout(
+        title="Top 10 Station Hotspots Overview",
+        subtitle="Site locations with highest total repetitive fault occurrences",
+        height=350
+    )
+    layout.update(dict(
+        xaxis=dict(title="Station Location", showgrid=False, tickangle=-15),
+        yaxis=dict(title="Fault Count", showgrid=True, gridcolor="#F1F5F9")
+    ))
+    fig.update_layout(**layout)
+    return fig
+
+
+def plot_subtype_occurrence_linechart(df, group_col='issueSubType', title="Sub-type Occurrence Trend", subtitle=None):
+    """Plot multi-line timeline chart showing occurrence trends for each fault sub-type over time."""
+    if df.empty or 'issueDate' not in df.columns or group_col not in df.columns:
+        return None
+
+    dt_df = df[df['issueDate'].notna()].copy()
+    if dt_df.empty:
+        return None
+
+    dt_df['Period'] = dt_df['issueDate'].dt.strftime('%b %Y')
+    dt_df['Period_Sort'] = dt_df['issueDate'].dt.to_period('M')
+
+    # Aggregate occurrences by Month and Sub-type
+    trend_df = dt_df.groupby(['Period_Sort', 'Period', group_col]).size().reset_index(name='Occurrences')
+    trend_df = trend_df.sort_values('Period_Sort')
+
+    if trend_df.empty:
+        return None
+
+    fig = go.Figure()
+    top_subtypes = dt_df[group_col].value_counts().head(8).index.tolist()
+    filtered_trend = trend_df[trend_df[group_col].isin(top_subtypes)]
+
+    palette = [
+        '#DC2626', '#2563EB', '#10B981', '#F59E0B', '#8B5CF6',
+        '#EC4899', '#06B6D4', '#64748B', '#D97706', '#059669'
+    ]
+
+    for idx, subtype in enumerate(top_subtypes):
+        sub_slice = filtered_trend[filtered_trend[group_col] == subtype]
+        if sub_slice.empty:
+            continue
+        color = palette[idx % len(palette)]
+        fig.add_trace(go.Scatter(
+            x=sub_slice['Period'],
+            y=sub_slice['Occurrences'],
+            name=str(subtype),
+            mode='lines+markers+text',
+            text=sub_slice['Occurrences'],
+            textposition='top center',
+            textfont=dict(size=10, family="Inter, sans-serif"),
+            line=dict(color=color, width=3, shape='spline'),
+            marker=dict(size=7, color=color, line=dict(color='#FFFFFF', width=1.5)),
+            hovertemplate=f'<b>{subtype}</b><br>Period: <b>%{{x}}</b><br>Occurrences: <b>%{{y:,}}</b><extra></extra>'
+        ))
+
+    layout = _modern_layout(
+        title=title,
+        subtitle=subtitle if subtitle else "Timeline frequency & occurrence progression by sub-type",
+        height=380
+    )
+    layout.update(dict(
+        xaxis=dict(title=None, showgrid=False),
+        yaxis=dict(title="Occurrence Count", showgrid=True, gridcolor="#F1F5F9", dtick=1),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.34, xanchor="center", x=0.5)
     ))
     fig.update_layout(**layout)
     return fig
@@ -1585,7 +1754,7 @@ def render_filter_toolbar(issue_df):
             </div>
         """, unsafe_allow_html=True)
 
-        col_m, col_z, col_zme, col_sev = st.columns([3.0, 2.5, 2.5, 2.0])
+        col_m, col_st, col_z, col_zme = st.columns([2.5, 2.5, 2.5, 2.5])
 
         with col_m:
             selected_months = st.multiselect(
@@ -1597,20 +1766,33 @@ def render_filter_toolbar(issue_df):
             if not selected_months:
                 selected_months = all_months
 
-        # Base filtered slice for dynamic Zone/ZME dropdowns
+        # Base filtered slice for dynamic State/Zone/ZME dropdowns
         temp_df = issue_df.copy()
         if selected_months:
             temp_df = temp_df[temp_df['month'].isin(selected_months)]
 
-        available_zones = sorted(list(temp_df['zone'].dropna().unique())) if not temp_df.empty else []
+        # Available States
+        available_states = sorted(list(temp_df['state'].dropna().unique())) if not temp_df.empty else []
+        with col_st:
+            selected_states = st.multiselect("🏛️ State / Location:", available_states, default=available_states, key="flt_states")
+            if not selected_states:
+                selected_states = available_states
+
+        # Available Zones within selected states
+        if selected_states and not temp_df.empty:
+            zone_pool_df = temp_df[temp_df['state'].isin(selected_states)]
+        else:
+            zone_pool_df = temp_df
+
+        available_zones = sorted(list(zone_pool_df['zone'].dropna().unique())) if not zone_pool_df.empty else []
         with col_z:
             selected_zones = st.multiselect("🏢 Zone / Region:", available_zones, default=available_zones, key="flt_zones")
             if not selected_zones:
                 selected_zones = available_zones
 
         # ZMEs within selected zones
-        if selected_zones and not temp_df.empty:
-            zme_pool = sorted(list(temp_df[temp_df['zone'].isin(selected_zones)]['zme'].dropna().unique()))
+        if selected_zones and not zone_pool_df.empty:
+            zme_pool = sorted(list(zone_pool_df[zone_pool_df['zone'].isin(selected_zones)]['zme'].dropna().unique()))
         else:
             zme_pool = sorted(list(temp_df['zme'].dropna().unique())) if not temp_df.empty else []
 
@@ -1618,10 +1800,6 @@ def render_filter_toolbar(issue_df):
             selected_zmes = st.multiselect("👷 ZME / Engineer:", zme_pool, default=zme_pool, key="flt_zmes")
             if not selected_zmes:
                 selected_zmes = zme_pool
-
-        with col_sev:
-            available_sevs = ['All'] + sorted(list(issue_df['severity'].dropna().unique())) if not issue_df.empty else ['All']
-            selected_severity = st.selectbox("⚡ Severity:", available_sevs, index=0, key="flt_severity")
 
         # Secondary filter row: Charger Make, Search, and Excel Export
         col_make, col_search, col_exp = st.columns([2.5, 5.0, 2.5])
@@ -1636,16 +1814,16 @@ def render_filter_toolbar(issue_df):
         filtered_for_export = apply_filters(
             issue_df,
             months=selected_months,
+            states=selected_states,
             zones=selected_zones,
             zmes=selected_zmes,
-            severity=selected_severity,
             make=selected_make,
             query=search_query
         )
 
         active_filters_meta = {
+            'states': ", ".join(selected_states[:3]) if len(selected_states) <= 3 else f"{len(selected_states)} Selected",
             'zones': ", ".join(selected_zones[:3]) if len(selected_zones) <= 3 else f"{len(selected_zones)} Selected",
-            'severity': selected_severity,
             'make': selected_make,
             'search': search_query if search_query else "None"
         }
@@ -1664,10 +1842,10 @@ def render_filter_toolbar(issue_df):
                 key="flt_download_report_btn"
             )
 
-    return selected_months, selected_zones, selected_zmes, selected_severity, selected_make, search_query
+    return selected_months, selected_states, selected_zones, selected_zmes, selected_make, search_query
 
 
-def apply_filters(df, months, zones, zmes, severity, make, query):
+def apply_filters(df, months, states, zones, zmes, make, query):
     """Apply all active filters to the issue dataframe."""
     if df.empty:
         return df
@@ -1675,12 +1853,12 @@ def apply_filters(df, months, zones, zmes, severity, make, query):
     filtered = df.copy()
     if months:
         filtered = filtered[filtered['month'].isin(months)]
+    if states:
+        filtered = filtered[filtered['state'].isin(states)]
     if zones:
         filtered = filtered[filtered['zone'].isin(zones)]
     if zmes:
         filtered = filtered[filtered['zme'].isin(zmes)]
-    if severity and severity != 'All':
-        filtered = filtered[filtered['severity'] == severity]
     if make and make != 'All':
         filtered = filtered[filtered['chargerMake'] == make]
 
@@ -1694,7 +1872,8 @@ def apply_filters(df, months, zones, zmes, severity, make, query):
             filtered['description'].astype(str).str.lower().str.contains(q) |
             filtered['issueType'].astype(str).str.lower().str.contains(q) |
             filtered['issueSubType'].astype(str).str.lower().str.contains(q) |
-            filtered['zme'].astype(str).str.lower().str.contains(q)
+            filtered['zme'].astype(str).str.lower().str.contains(q) |
+            filtered['state'].astype(str).str.lower().str.contains(q)
         )
         filtered = filtered[search_mask]
 
@@ -1867,22 +2046,13 @@ def render_executive_analytics(filtered_df, full_df):
         else:
             st.info("No charger OEM make data available.")
 
-    # ── Charts Section 4: Station Hotspots & Monthly Timeline ─────────────────
-    col_h1, col_h2 = st.columns([6, 6])
-
-    with col_h1:
-        fig_trend = plot_fault_trend_timeline(filtered_df)
-        if fig_trend:
-            st.plotly_chart(fig_trend, use_container_width=True)
-        else:
-            st.info("No date trend data available.")
-
-    with col_h2:
-        fig_hotspots = plot_station_hotspots(filtered_df, top_n=10)
-        if fig_hotspots:
-            st.plotly_chart(fig_hotspots, use_container_width=True)
-        else:
-            st.info("No station data available.")
+    # ── Charts Section 4: Station Hotspots ────────────────────────────────────
+    st.markdown('<div class="section-header">📍 <span class="section-header-accent">Station Hotspots</span> Analytics</div>', unsafe_allow_html=True)
+    fig_hotspots = plot_station_hotspots(filtered_df, top_n=10)
+    if fig_hotspots:
+        st.plotly_chart(fig_hotspots, use_container_width=True)
+    else:
+        st.info("No station data available.")
 
 
 # ─── View 2: Repetitive Faults Analytics ──────────────────────────────────────
@@ -1959,104 +2129,111 @@ def render_repetitive_faults_view(filtered_df):
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Tabs for Repetitive Views ────────────────────────────────────────────
-    tab_overall, tab_station, tab_drilldown = st.tabs([
-        f"🏆 Top 10 Overall Repetitive Faults ({len(top10_overall)})",
-        f"📍 Top 20 Repetitive Faults by Station ({len(top20_station)})",
+    tab_issue_types, tab_station, tab_drilldown = st.tabs([
+        "⚡ Top 10 Issue Types & Top 5 Sub-Types Analytics",
+        "📍 Repetitive Faults by Station Location",
         "🔍 Incident Ticket Drilldown"
     ])
 
-    with tab_overall:
-        if not top10_overall.empty:
-            col_g1, col_g2 = st.columns([6, 6])
-            with col_g1:
-                st.plotly_chart(plot_top10_overall_faults(top10_overall), use_container_width=True)
-            with col_g2:
-                st.write("##### 📋 Top 10 Overall Repetitive Faults Leaderboard")
-                disp_top10 = top10_overall.copy()
-                disp_top10['Rank'] = [f"#{i+1}" for i in range(len(disp_top10))]
-                disp_top10 = disp_top10[[
-                    'Rank', 'issueType', 'issueSubType', 'total_count', 'unique_stations',
-                    'unique_chargers', 'open_count', 'within_tat', 'breached_tat', 'tat_efficiency'
-                ]].rename(columns={
-                    'issueType': 'Category',
-                    'issueSubType': 'Fault Sub-Type',
-                    'total_count': 'Total Incidents',
-                    'unique_stations': 'Sites Impacted',
-                    'unique_chargers': 'Chargers Impacted',
-                    'open_count': 'Open',
-                    'within_tat': 'Within TAT',
-                    'breached_tat': 'Breached TAT',
-                    'tat_efficiency': 'SLA %'
-                })
+    with tab_issue_types:
+        st.markdown('<div class="section-header">⚡ <span class="section-header-accent">Top 10 Overall Repetitive Issue Types</span> &amp; Top 5 Sub-Types Explorer</div>', unsafe_allow_html=True)
+        st.caption("Click on any Issue Type below or use the dropdown selector to view its Top 5 Sub-Types and affected station/charger records:")
 
-                st.dataframe(
-                    disp_top10.style.format({
-                        'Total Incidents': '{:,}',
-                        'Sites Impacted': '{:,}',
-                        'Chargers Impacted': '{:,}',
-                        'Open': '{:,}',
-                        'Within TAT': '{:,}',
-                        'Breached TAT': '{:,}',
-                        'SLA %': '{:.2f}%'
-                    }),
-                    use_container_width=True,
-                    height=360
-                )
+        # Aggregate Top 10 Overall Issue Types
+        type_counts = filtered_df.groupby('issueType').size().reset_index(name='Total_Faults').sort_values('Total_Faults', ascending=False)
+        top10_types_df = type_counts.head(10).copy()
+        tot_all_faults = len(filtered_df)
+        top10_types_df['Share %'] = (top10_types_df['Total_Faults'] / tot_all_faults * 100).round(1)
+        top10_types_df.rename(columns={'issueType': 'Issue Type'}, inplace=True)
 
-            csv_top10 = top10_overall.drop(columns=['fault_label'], errors='ignore').to_csv(index=False).encode('utf-8')
-            st.download_button(
-                "📥 Download Top 10 Overall Repetitive Faults CSV",
-                data=csv_top10,
-                file_name="Top10_Overall_Repetitive_Faults.csv",
-                mime="text/csv",
-                key="dl_top10_overall_csv"
+        # Top Overview Row (Bar Chart + Summary Table)
+        col_t1, col_t2 = st.columns([6, 6])
+        with col_t1:
+            fig_types = plot_top_issue_types_barchart(top10_types_df)
+            if fig_types:
+                st.plotly_chart(fig_types, use_container_width=True)
+            else:
+                st.info("No issue type data available.")
+        with col_t2:
+            st.write("##### Top 10 Issue Types Summary Table:")
+            st.dataframe(
+                top10_types_df.style.format({
+                    'Total_Faults': '{:,}',
+                    'Share %': '{:.1f}%'
+                }),
+                use_container_width=True,
+                height=340
             )
-        else:
-            st.info("No repetitive fault patterns found.")
+
+        st.markdown("<hr style='border-top: 1.5px solid #F1F5F9; margin: 1.5rem 0 1.0rem 0;'>", unsafe_allow_html=True)
+
+        # Expanders View for All Top 10 Issue Types (Matches user screenshot)
+        st.markdown("##### 📂 Expanders View for All Top 10 Issue Types")
+        for idx, row in top10_types_df.iterrows():
+            cat_name = row['Issue Type']
+            cat_tot = row['Total_Faults']
+
+            c_slice = filtered_df[filtered_df['issueType'] == cat_name]
+            sub_agg = c_slice.groupby('issueSubType').size().reset_index(name='Subtype_Count').sort_values('Subtype_Count', ascending=False)
+            t5_sub = sub_agg.head(5).copy()
+            t5_sub['Sub-Type Share %'] = (t5_sub['Subtype_Count'] / cat_tot * 100).round(1)
+            t5_sub.rename(columns={'issueSubType': 'Issue Sub-Type'}, inplace=True)
+
+            with st.expander(f"⚡ Issue Type: {cat_name} — Total {cat_tot:,} Occurrences ({len(t5_sub)} Top Sub-Types)", expanded=False):
+                c1, c2 = st.columns([6, 6])
+                with c1:
+                    fig_sub_exp = plot_top_subtypes_barchart(t5_sub, cat_name)
+                    if fig_sub_exp:
+                        st.plotly_chart(fig_sub_exp, use_container_width=True, key=f"chart_exp_cat_{idx}")
+                with c2:
+                    st.write(f"##### 📌 Top 5 Sub-Types Table for {cat_name}:")
+                    st.dataframe(
+                        t5_sub.style.format({
+                            'Subtype_Count': '{:,}',
+                            'Sub-Type Share %': '{:.1f}%'
+                        }),
+                        use_container_width=True,
+                        height=260
+                    )
+
+                st.write(f"##### 📝 Underlying Ticket Records for Issue Type '{cat_name}':")
+                st.dataframe(c_slice[[c for c in ['ocppId', 'stationId', 'stationName', 'issueSubType', 'status', 'tatCompliance', 'zme', 'zone'] if c in c_slice.columns]], use_container_width=True, height=240)
 
     with tab_station:
         if not top20_station.empty:
-            st.plotly_chart(plot_top20_station_faults(top20_station), use_container_width=True)
+            # Expanders View for All Top 20 Stations
+            st.markdown("##### 📂 Expanders View for Top 20 Station Locations")
+            for idx, row in top20_station.iterrows():
+                st_name = row['stationName']
+                st_tot = row['fault_count']
+                st_zone = row['zone']
+                st_zme = row['zme']
 
-            st.write("##### 📋 Top 20 Repetitive Faults by Stations Data Table")
-            disp_top20 = top20_station.copy()
-            disp_top20['Rank'] = [f"#{i+1}" for i in range(len(disp_top20))]
-            disp_top20 = disp_top20[[
-                'Rank', 'stationName', 'zone', 'zme', 'issueType', 'issueSubType',
-                'fault_count', 'open_count', 'within_tat', 'breached_tat', 'tat_efficiency'
-            ]].rename(columns={
-                'stationName': 'Station Name',
-                'zone': 'Zone',
-                'zme': 'Assigned ZME',
-                'issueType': 'Category',
-                'issueSubType': 'Fault Sub-Type',
-                'fault_count': 'Faults at Site',
-                'open_count': 'Open',
-                'within_tat': 'Within TAT',
-                'breached_tat': 'Breached TAT',
-                'tat_efficiency': 'Site SLA %'
-            })
+                st_slice = filtered_df[filtered_df['stationName'] == st_name]
+                sub_agg = st_slice.groupby('issueSubType').size().reset_index(name='Subtype_Count').sort_values('Subtype_Count', ascending=False)
+                t5_sub = sub_agg.head(5).copy()
+                t5_sub['Sub-Type Share %'] = (t5_sub['Subtype_Count'] / st_tot * 100).round(1)
+                t5_sub.rename(columns={'issueSubType': 'Issue Sub-Type'}, inplace=True)
 
-            st.dataframe(
-                disp_top20.style.format({
-                    'Faults at Site': '{:,}',
-                    'Open': '{:,}',
-                    'Within TAT': '{:,}',
-                    'Breached TAT': '{:,}',
-                    'Site SLA %': '{:.2f}%'
-                }),
-                use_container_width=True,
-                height=420
-            )
+                with st.expander(f"📍 Station: {st_name} — Total {st_tot:,} Occurrences ({st_zone} | ZME: {st_zme})", expanded=False):
+                    c1, c2 = st.columns([6, 6])
+                    with c1:
+                        fig_sub_st = plot_top_subtypes_barchart(t5_sub, st_name)
+                        if fig_sub_st:
+                            st.plotly_chart(fig_sub_st, use_container_width=True, key=f"chart_exp_st_{idx}")
+                    with c2:
+                        st.write(f"##### 📌 Top 5 Sub-Types Table for {st_name}:")
+                        st.dataframe(
+                            t5_sub.style.format({
+                                'Subtype_Count': '{:,}',
+                                'Sub-Type Share %': '{:.1f}%'
+                            }),
+                            use_container_width=True,
+                            height=260
+                        )
 
-            csv_top20 = top20_station.drop(columns=['station_fault_label'], errors='ignore').to_csv(index=False).encode('utf-8')
-            st.download_button(
-                "📥 Download Top 20 Station Repetitive Faults CSV",
-                data=csv_top20,
-                file_name="Top20_Station_Repetitive_Faults.csv",
-                mime="text/csv",
-                key="dl_top20_station_csv"
-            )
+                    st.write(f"##### 📝 Underlying Ticket Records for Station '{st_name}':")
+                    st.dataframe(st_slice[[c for c in ['ocppId', 'stationId', 'issueType', 'issueSubType', 'status', 'tatCompliance', 'zme', 'zone'] if c in st_slice.columns]], use_container_width=True, height=240)
         else:
             st.info("No station repetitive fault data available.")
 
@@ -2494,15 +2671,15 @@ def main():
             st.rerun()
 
     # Filter Toolbar
-    selected_months, selected_zones, selected_zmes, selected_sev, selected_make, search_q = render_filter_toolbar(issue_df)
+    selected_months, selected_states, selected_zones, selected_zmes, selected_make, search_q = render_filter_toolbar(issue_df)
 
     # Filtered Dataset
     filtered_df = apply_filters(
         issue_df,
         months=selected_months,
+        states=selected_states,
         zones=selected_zones,
         zmes=selected_zmes,
-        severity=selected_sev,
         make=selected_make,
         query=search_q
     )
