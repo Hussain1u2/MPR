@@ -9,7 +9,10 @@ import os
 import re
 
 import openpyxl
-from openpyxl.chart import BarChart, PieChart, Reference
+from openpyxl.chart import BarChart, LineChart, PieChart, Reference
+from openpyxl.chart.series import DataPoint
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -469,14 +472,168 @@ def compute_top_repetitive_faults(issue_df, top_overall=10, top_station=20):
     return top10_df, top20_station_df
 
 
+# ─── Red & White Theme Excel Styling Helpers ────────────────────────────────────
+
+def _apply_red_white_theme_to_sheet(ws, title_banner=None, is_kpi=False, is_breached=False):
+    """
+    Applies executive Red & White theme styling to an openpyxl worksheet.
+    - Explicit gridlines enabled.
+    - Title banner at Row 1: Deep Red Fill (#7F1D1D), 13pt bold white font.
+    - Header row: Dark Crimson Red (#991B1B), 11pt bold white font, centered.
+    - Alternating Zebra data rows: White (#FFFFFF) and Faint Red Blush (#FFF5F5).
+    - If is_breached is True: Light Red Alert fill (#FEE2E2), dark red text (#991B1B).
+    - Grid borders: Thin light gray (#E2E8F0) / thin red (#B91C1C).
+    - Number formatting for integers (#,##0), percentages (0.0%), dates.
+    - Dynamic column auto-fitting.
+    """
+    ws.views.sheetView[0].showGridLines = True
+
+    header_fill = PatternFill(start_color="991B1B", end_color="991B1B", fill_type="solid")
+    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+
+    banner_fill = PatternFill(start_color="7F1D1D", end_color="7F1D1D", fill_type="solid")
+    banner_font = Font(name="Calibri", size=13, bold=True, color="FFFFFF")
+
+    kpi_param_fill = PatternFill(start_color="FEF2F2", end_color="FEF2F2", fill_type="solid")
+    kpi_param_font = Font(name="Calibri", size=10, bold=True, color="991B1B")
+
+    white_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+    zebra_fill = PatternFill(start_color="FFF5F5", end_color="FFF5F5", fill_type="solid")
+    breached_fill = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid")
+
+    thin_border = Border(
+        left=Side(style='thin', color='E2E8F0'),
+        right=Side(style='thin', color='E2E8F0'),
+        top=Side(style='thin', color='E2E8F0'),
+        bottom=Side(style='thin', color='E2E8F0')
+    )
+    header_border = Border(
+        left=Side(style='thin', color='B91C1C'),
+        right=Side(style='thin', color='B91C1C'),
+        top=Side(style='medium', color='7F1D1D'),
+        bottom=Side(style='medium', color='7F1D1D')
+    )
+
+    max_c = ws.max_column
+
+    if title_banner:
+        ws.insert_rows(1)
+        ws.row_dimensions[1].height = 30
+        for c in range(1, max_c + 1):
+            cell = ws.cell(row=1, column=c)
+            cell.fill = banner_fill
+            cell.border = thin_border
+        
+        banner_cell = ws.cell(row=1, column=1, value=title_banner)
+        banner_cell.font = banner_font
+        banner_cell.fill = banner_fill
+        banner_cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+
+        header_row = 2
+        data_start_row = 3
+    else:
+        header_row = 1
+        data_start_row = 2
+
+    # Style Header Row
+    if header_row <= ws.max_row:
+        ws.row_dimensions[header_row].height = 26
+        for c in range(1, max_c + 1):
+            cell = ws.cell(row=header_row, column=c)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = header_border
+
+    # Style Data Rows
+    for r in range(data_start_row, ws.max_row + 1):
+        row_has_val = any(ws.cell(row=r, column=c).value is not None for c in range(1, max_c + 1))
+        if not row_has_val:
+            continue
+
+        fill_to_use = breached_fill if is_breached else (zebra_fill if (r % 2 == 1) else white_fill)
+        ws.row_dimensions[r].height = 20
+
+        for c in range(1, max_c + 1):
+            cell = ws.cell(row=r, column=c)
+            val = cell.value
+
+            if is_kpi and c == 1 and r <= 13:
+                cell.fill = kpi_param_fill
+                cell.font = kpi_param_font
+                cell.alignment = Alignment(horizontal="left", vertical="center")
+                cell.border = thin_border
+                continue
+
+            if cell.fill == header_fill:
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                cell.border = header_border
+                continue
+
+            cell.fill = fill_to_use
+            cell.border = thin_border
+            cell.font = Font(name="Calibri", size=10, color="991B1B" if is_breached else "1E293B")
+
+            if val is not None:
+                header_name = str(ws.cell(row=header_row, column=c).value or "")
+
+                if isinstance(val, (int, float)):
+                    if any(pct_kw in header_name for pct_kw in ['%', 'Efficiency', 'SLA', 'Adherence', 'Share']):
+                        cell.alignment = Alignment(horizontal="right", vertical="center")
+                        if isinstance(val, float) and val <= 1.0:
+                            cell.number_format = '0.0%'
+                        else:
+                            cell.number_format = '0.0"%"'
+                    else:
+                        cell.alignment = Alignment(horizontal="right", vertical="center")
+                        cell.number_format = '#,##0'
+                else:
+                    val_str = str(val).strip()
+                    if len(val_str) <= 14 and any(char.isdigit() for char in val_str) and ('-' in val_str or '/' in val_str or 'CLOSED' in val_str or 'OPEN' in val_str or 'CRITICAL' in val_str or 'MAJOR' in val_str):
+                        cell.alignment = Alignment(horizontal="center", vertical="center")
+                    else:
+                        cell.alignment = Alignment(horizontal="left", vertical="center")
+
+    # Column Width Auto-Fitting
+    for col_idx in range(1, max_c + 1):
+        col_letter = get_column_letter(col_idx)
+        max_len = 0
+        for r in range(header_row, ws.max_row + 1):
+            c_val = ws.cell(row=r, column=col_idx).value
+            if c_val is not None:
+                max_len = max(max_len, len(str(c_val)))
+        ws.column_dimensions[col_letter].width = max(min(max_len + 5, 50), 14)
+
+
+def _apply_red_theme_to_chart(chart):
+    """Applies Red & White theme styling to native openpyxl chart object."""
+    colors = ['991B1B', 'DC2626', 'F87171', '7F1D1D', 'B91C1C', 'EF4444', 'FCA5A5']
+    if hasattr(chart, 'series'):
+        for i, s in enumerate(chart.series):
+            color = colors[i % len(colors)]
+            try:
+                s.graphicalProperties.solidFill = color
+            except Exception:
+                pass
+            if hasattr(s, 'data_points') and len(s.data_points) == 0:
+                try:
+                    for idx, c in enumerate(colors[:5]):
+                        dp = DataPoint(idx=idx)
+                        dp.graphicalProperties.solidFill = c
+                        s.data_points.append(dp)
+                except Exception:
+                    pass
+
+
 # ─── Excel Multi-Tab Report Generator ─────────────────────────────────────────
 
 @st.cache_data(show_spinner=False)
 def generate_issue_excel_report(filtered_df, full_df, months_list, active_filters_info=None):
-    """Generate executive multi-tab Excel workbook with embedded native Excel charts according to active filters."""
+    """Generate executive multi-tab Excel workbook with embedded native Excel charts & tables in Red & White Theme."""
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # Sheet 1: Executive KPI Summary
+        # ── Sheet 1: Executive KPI Summary & OEM Reliability ──────────────────
         tot = len(filtered_df)
         open_cnt = int(filtered_df['_Is_Open_'].sum()) if not filtered_df.empty else 0
         closed_cnt = int(filtered_df['_Is_Closed_'].sum()) if not filtered_df.empty else 0
@@ -490,8 +647,10 @@ def generate_issue_excel_report(filtered_df, full_df, months_list, active_filter
         tat_eff = (within_tat / tot * 100) if tot > 0 else 0.0
 
         period_str = ', '.join(months_list) if months_list else 'All Recorded Months'
-        if active_filters_info and isinstance(active_filters_info, dict):
+        if isinstance(active_filters_info, dict):
             filter_summary_str = f"Months: {period_str} | States: {active_filters_info.get('states', 'All')} | Zones: {active_filters_info.get('zones', 'All')} | Make: {active_filters_info.get('make', 'All')}"
+        elif isinstance(active_filters_info, str):
+            filter_summary_str = active_filters_info
         else:
             filter_summary_str = period_str
 
@@ -511,28 +670,176 @@ def generate_issue_excel_report(filtered_df, full_df, months_list, active_filter
         pd.DataFrame(kpi_summary).to_excel(writer, sheet_name='Executive Summary', index=False)
         ws_exec = writer.sheets['Executive Summary']
 
-        # SLA Breakdown Chart Reference Data on Executive Summary Sheet
-        ws_exec.cell(row=14, column=1, value="SLA Status Category")
-        ws_exec.cell(row=14, column=2, value="Incident Volume")
-        ws_exec.cell(row=15, column=1, value="Closed Within TAT")
-        ws_exec.cell(row=15, column=2, value=within_tat)
-        ws_exec.cell(row=16, column=1, value="Closed Breached TAT")
-        ws_exec.cell(row=16, column=2, value=outside_tat)
-        ws_exec.cell(row=17, column=1, value="Active Open")
-        ws_exec.cell(row=17, column=2, value=open_cnt)
+        # SLA Pie Chart Reference Data
+        ws_exec.cell(row=15, column=1, value="SLA Status Category")
+        ws_exec.cell(row=15, column=2, value="Incident Volume")
+        ws_exec.cell(row=16, column=1, value="Closed Within TAT")
+        ws_exec.cell(row=16, column=2, value=within_tat)
+        ws_exec.cell(row=17, column=1, value="Closed Breached TAT")
+        ws_exec.cell(row=17, column=2, value=outside_tat)
+        ws_exec.cell(row=18, column=1, value="Active Open")
+        ws_exec.cell(row=18, column=2, value=open_cnt)
 
-        # Embedded Native Excel PieChart on Executive Summary
+        # Style SLA Breakdown Table Header in Red
+        header_fill = PatternFill(start_color="991B1B", end_color="991B1B", fill_type="solid")
+        header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+        ws_exec.cell(row=15, column=1).fill = header_fill
+        ws_exec.cell(row=15, column=1).font = header_font
+        ws_exec.cell(row=15, column=2).fill = header_fill
+        ws_exec.cell(row=15, column=2).font = header_font
+
         pie_exec = PieChart()
         pie_exec.title = "Executive SLA Compliance Breakdown"
         pie_exec.width = 16
         pie_exec.height = 10
-        data_exec_pie = Reference(ws_exec, min_col=2, min_row=14, max_row=17)
-        labels_exec_pie = Reference(ws_exec, min_col=1, min_row=15, max_row=17)
-        pie_exec.add_data(data_exec_pie, titles_from_data=True)
-        pie_exec.set_categories(labels_exec_pie)
-        ws_exec.add_chart(pie_exec, "D2")
+        data_pie = Reference(ws_exec, min_col=2, min_row=15, max_row=18)
+        labels_pie = Reference(ws_exec, min_col=1, min_row=16, max_row=18)
+        pie_exec.add_data(data_pie, titles_from_data=True)
+        pie_exec.set_categories(labels_pie)
+        _apply_red_theme_to_chart(pie_exec)
+        ws_exec.add_chart(pie_exec, "D3")
 
-        # Sheet 2: Repetitive Faults Analysis
+        # OEM Charger Reliability Data Table & Chart on Executive Summary
+        charger_types = ['Charger', 'Charger Software', 'Charger_Software']
+        make_df = filtered_df[filtered_df['issueType'].isin(charger_types) & (filtered_df['chargerMake'] != 'Unknown')].copy()
+        if not make_df.empty:
+            oem_map = {'Brightblu': 'BrightBlu', 'Bright blu': 'BrightBlu', 'brightblu': 'BrightBlu', 'Delta': 'Delta', 'delta': 'Delta', 'Exicom': 'Exicom', 'exicom': 'Exicom', 'Siemens': 'Siemens', 'siemens': 'Siemens', 'Ador': 'Ador', 'ador': 'Ador'}
+            make_df['chargerMake'] = make_df['chargerMake'].replace(oem_map)
+            make_agg = make_df.groupby('chargerMake').agg(
+                Total=('issueId', 'count'),
+                Within_TAT=('_Is_Closed_Within_', 'sum'),
+                Breached=('_Is_Closed_Without_', 'sum'),
+                Open=('_Is_Open_', 'sum')
+            ).reset_index().sort_values('Total', ascending=False).head(8)
+
+            ws_exec.cell(row=21, column=1, value="OEM Manufacturer")
+            ws_exec.cell(row=21, column=2, value="Closed Within TAT")
+            ws_exec.cell(row=21, column=3, value="Breached TAT")
+            ws_exec.cell(row=21, column=4, value="Active Open")
+
+            for c in range(1, 5):
+                ws_exec.cell(row=21, column=c).fill = header_fill
+                ws_exec.cell(row=21, column=c).font = header_font
+
+            for r_idx, row in enumerate(make_agg.itertuples(), start=22):
+                ws_exec.cell(row=r_idx, column=1, value=row.chargerMake)
+                ws_exec.cell(row=r_idx, column=2, value=row.Within_TAT)
+                ws_exec.cell(row=r_idx, column=3, value=row.Breached)
+                ws_exec.cell(row=r_idx, column=4, value=row.Open)
+
+            chart_oem = BarChart()
+            chart_oem.type = "col"
+            chart_oem.grouping = "stacked"
+            chart_oem.overlap = 100
+            chart_oem.title = "Charger OEM Reliability & SLA Adherence"
+            chart_oem.width = 17
+            chart_oem.height = 10
+            chart_oem.x_axis.title = "OEM Manufacturer"
+            chart_oem.y_axis.title = "Ticket Volume"
+
+            data_oem = Reference(ws_exec, min_col=2, max_col=4, min_row=21, max_row=21 + len(make_agg))
+            cats_oem = Reference(ws_exec, min_col=1, min_row=22, max_row=21 + len(make_agg))
+            chart_oem.add_data(data_oem, titles_from_data=True)
+            chart_oem.set_categories(cats_oem)
+            _apply_red_theme_to_chart(chart_oem)
+            ws_exec.add_chart(chart_oem, "D21")
+
+        _apply_red_white_theme_to_sheet(ws_exec, title_banner="CHARGEZONE OPERATIONAL DASHBOARD — EXECUTIVE SUMMARY", is_kpi=True)
+
+        # ── Sheet 2: Monthly SLA Trend ────────────────────────────────────────
+        if 'month' in filtered_df.columns and not filtered_df.empty:
+            month_agg = filtered_df.groupby('month').agg(
+                Total_Faults=('issueId', 'count'),
+                Open_Faults=('_Is_Open_', 'sum'),
+                Closed_Faults=('_Is_Closed_', 'sum'),
+                Within_TAT=('_Is_Closed_Within_', 'sum'),
+                Breached_TAT=('_Is_Closed_Without_', 'sum'),
+                Overdue=('_Is_Overdue_', 'sum')
+            ).reset_index()
+            month_agg['CM_Efficiency_%'] = (month_agg['Closed_Faults'] / month_agg['Total_Faults'] * 100).round(1)
+            month_agg['TAT_Efficiency_%'] = (month_agg['Within_TAT'] / month_agg['Total_Faults'] * 100).round(1)
+
+            disp_m_df = month_agg.rename(columns={
+                'month': 'Month Period',
+                'Total_Faults': 'Total Incidents',
+                'Open_Faults': 'Open Incidents',
+                'Closed_Faults': 'Closed Incidents',
+                'Within_TAT': 'Closed Within TAT',
+                'Breached_TAT': 'Breached TAT',
+                'Overdue': 'Overdue Open',
+                'CM_Efficiency_%': 'CM Efficiency %',
+                'TAT_Efficiency_%': 'SLA Adherence %'
+            })
+            disp_m_df.to_excel(writer, sheet_name='Monthly SLA Trend', index=False)
+            ws_m = writer.sheets['Monthly SLA Trend']
+
+            chart_m = BarChart()
+            chart_m.type = "col"
+            chart_m.grouping = "clustered"
+            chart_m.title = "Monthly Operational Fault & SLA Resolution Trends"
+            chart_m.width = 18
+            chart_m.height = 11
+            chart_m.x_axis.title = "Month Period"
+            chart_m.y_axis.title = "Incident Volume"
+
+            data_m = Reference(ws_m, min_col=2, max_col=6, min_row=1, max_row=len(disp_m_df) + 1)
+            cats_m = Reference(ws_m, min_col=1, min_row=2, max_row=len(disp_m_df) + 1)
+            chart_m.add_data(data_m, titles_from_data=True)
+            chart_m.set_categories(cats_m)
+            _apply_red_theme_to_chart(chart_m)
+            ws_m.add_chart(chart_m, "K3")
+            _apply_red_white_theme_to_sheet(ws_m, title_banner="CHARGEZONE OPERATIONAL DASHBOARD — MONTHLY SLA TRENDS")
+
+        # ── Sheet 3: Repetitive Faults Overview (Top 10 Categories x Top 5 Sub-Types) ──
+        if not filtered_df.empty and 'issueType' in filtered_df.columns:
+            top10_cats = filtered_df['issueType'].value_counts().head(10).index.tolist()
+            records = []
+            for cat in top10_cats:
+                cat_df = filtered_df[filtered_df['issueType'] == cat]
+                sub_agg = cat_df.groupby('issueSubType').agg(
+                    Total_Count=('issueId', 'count'),
+                    Open_Count=('_Is_Open_', 'sum'),
+                    Closed_Count=('_Is_Closed_', 'sum'),
+                    Within_TAT=('_Is_Closed_Within_', 'sum'),
+                    Breached_TAT=('_Is_Closed_Without_', 'sum')
+                ).reset_index().sort_values('Total_Count', ascending=False).head(5)
+                sub_agg['Category'] = cat
+                sub_agg['SLA_Adherence_%'] = (sub_agg['Within_TAT'] / sub_agg['Total_Count'].replace(0, pd.NA) * 100).fillna(0.0).round(1)
+                records.append(sub_agg)
+
+            if records:
+                top_cat_sub_df = pd.concat(records, ignore_index=True)
+                disp_df = top_cat_sub_df[['Category', 'issueSubType', 'Total_Count', 'Open_Count', 'Closed_Count', 'Within_TAT', 'Breached_TAT', 'SLA_Adherence_%']].rename(columns={
+                    'Category': 'Issue Category',
+                    'issueSubType': 'Fault Sub-Type',
+                    'Total_Count': 'Total Incidents',
+                    'Open_Count': 'Open Incidents',
+                    'Closed_Count': 'Closed Incidents',
+                    'Within_TAT': 'Closed Within TAT',
+                    'Breached_TAT': 'Breached TAT',
+                    'SLA_Adherence_%': 'SLA Adherence %'
+                })
+                disp_df.to_excel(writer, sheet_name='Repetitive Faults Overview', index=False)
+                ws_rep = writer.sheets['Repetitive Faults Overview']
+
+                chart_rep = BarChart()
+                chart_rep.type = "bar"
+                chart_rep.grouping = "stacked"
+                chart_rep.overlap = 100
+                chart_rep.title = "Top 10 Categories x Top 5 Sub-Types SLA Performance"
+                chart_rep.width = 20
+                chart_rep.height = 14
+                chart_rep.x_axis.title = "Incident Volume"
+                chart_rep.y_axis.title = "Fault Sub-Type"
+                data_rep = Reference(ws_rep, min_col=6, max_col=7, min_row=1, max_row=len(disp_df) + 1)
+                cats_rep = Reference(ws_rep, min_col=2, min_row=2, max_row=len(disp_df) + 1)
+                chart_rep.add_data(data_rep, titles_from_data=True)
+                chart_rep.set_categories(cats_rep)
+                _apply_red_theme_to_chart(chart_rep)
+                ws_rep.add_chart(chart_rep, "J3")
+                _apply_red_white_theme_to_sheet(ws_rep, title_banner="CHARGEZONE OPERATIONAL DASHBOARD — REPETITIVE FAULTS OVERVIEW")
+
+        # ── Sheet 4: Top 10 Overall Repetitive Faults ─────────────────────────
         top10_rep, top20_st_rep = compute_top_repetitive_faults(filtered_df, top_overall=10, top_station=20)
         if not top10_rep.empty:
             top10_disp = top10_rep.rename(columns={
@@ -550,7 +857,6 @@ def generate_issue_excel_report(filtered_df, full_df, months_list, active_filter
             top10_disp.drop(columns=['fault_label'], errors='ignore').to_excel(writer, sheet_name='Top 10 Overall Faults', index=False)
             ws_t10 = writer.sheets['Top 10 Overall Faults']
 
-            # Embedded Native Stacked BarChart on Top 10 Sheet
             chart_t10 = BarChart()
             chart_t10.type = "bar"
             chart_t10.grouping = "stacked"
@@ -560,13 +866,15 @@ def generate_issue_excel_report(filtered_df, full_df, months_list, active_filter
             chart_t10.height = 12
             chart_t10.x_axis.title = "Incident Volume"
             chart_t10.y_axis.title = "Fault Sub-Type"
-            # Cols in top10_disp: 1:Category, 2:Fault Sub-Type, 3:Total Incidents, 4:Impacted Sites, 5:Impacted Chargers, 6:Open Incidents, 7:Closed Incidents, 8:Closed Within TAT, 9:Breached TAT, 10:SLA Adherence %
             data_t10 = Reference(ws_t10, min_col=8, max_col=9, min_row=1, max_row=len(top10_disp) + 1)
             cats_t10 = Reference(ws_t10, min_col=2, min_row=2, max_row=len(top10_disp) + 1)
             chart_t10.add_data(data_t10, titles_from_data=True)
             chart_t10.set_categories(cats_t10)
-            ws_t10.add_chart(chart_t10, "L2")
+            _apply_red_theme_to_chart(chart_t10)
+            ws_t10.add_chart(chart_t10, "L3")
+            _apply_red_white_theme_to_sheet(ws_t10, title_banner="CHARGEZONE OPERATIONAL DASHBOARD — TOP 10 OVERALL REPETITIVE FAULTS")
 
+        # ── Sheet 5: Top 20 Station Hotspots ──────────────────────────────────
         if not top20_st_rep.empty:
             top20_disp = top20_st_rep.rename(columns={
                 'stationName': 'Station Name',
@@ -581,10 +889,9 @@ def generate_issue_excel_report(filtered_df, full_df, months_list, active_filter
                 'breached_tat': 'Breached TAT',
                 'tat_efficiency': 'Station SLA %'
             })
-            top20_disp.drop(columns=['station_fault_label'], errors='ignore').to_excel(writer, sheet_name='Top 20 Station Faults', index=False)
-            ws_t20 = writer.sheets['Top 20 Station Faults']
+            top20_disp.drop(columns=['station_fault_label'], errors='ignore').to_excel(writer, sheet_name='Top 20 Station Hotspots', index=False)
+            ws_t20 = writer.sheets['Top 20 Station Hotspots']
 
-            # Embedded Native Stacked BarChart on Top 20 Sheet
             chart_t20 = BarChart()
             chart_t20.type = "bar"
             chart_t20.grouping = "stacked"
@@ -594,14 +901,15 @@ def generate_issue_excel_report(filtered_df, full_df, months_list, active_filter
             chart_t20.height = 14
             chart_t20.x_axis.title = "Fault Count at Site"
             chart_t20.y_axis.title = "Station Name"
-            # Cols in top20_disp: 1:Station Name, 2:Zone, 3:ZME, 4:Cat, 5:Sub, 6:Fault Count, 7:Open, 8:Closed, 9:Within TAT, 10:Breached TAT, 11:Station SLA %
             data_t20 = Reference(ws_t20, min_col=9, max_col=10, min_row=1, max_row=len(top20_disp) + 1)
             cats_t20 = Reference(ws_t20, min_col=1, min_row=2, max_row=len(top20_disp) + 1)
             chart_t20.add_data(data_t20, titles_from_data=True)
             chart_t20.set_categories(cats_t20)
-            ws_t20.add_chart(chart_t20, "M2")
+            _apply_red_theme_to_chart(chart_t20)
+            ws_t20.add_chart(chart_t20, "M3")
+            _apply_red_white_theme_to_sheet(ws_t20, title_banner="CHARGEZONE OPERATIONAL DASHBOARD — TOP 20 SITE FAILURE HOTSPOTS")
 
-        # Sheet 3: ZME Scorecard
+        # ── Sheet 6: ZME Performance Scorecard ────────────────────────────────
         zme_table = compute_zme_issue_table(filtered_df)
         if not zme_table.empty:
             zme_disp = zme_table.rename(columns={
@@ -617,10 +925,9 @@ def generate_issue_excel_report(filtered_df, full_df, months_list, active_filter
                 'cm_efficiency': 'CM Efficiency %',
                 'tat_efficiency': 'TAT SLA %'
             })
-            zme_disp.to_excel(writer, sheet_name='ZME Scorecard', index=False)
-            ws_zme = writer.sheets['ZME Scorecard']
+            zme_disp.to_excel(writer, sheet_name='ZME Performance Scorecard', index=False)
+            ws_zme = writer.sheets['ZME Performance Scorecard']
 
-            # Embedded Native BarChart on ZME Scorecard Sheet
             chart_zme = BarChart()
             chart_zme.type = "bar"
             chart_zme.grouping = "stacked"
@@ -630,14 +937,15 @@ def generate_issue_excel_report(filtered_df, full_df, months_list, active_filter
             chart_zme.height = 12
             chart_zme.x_axis.title = "Incident Volume"
             chart_zme.y_axis.title = "ZME Engineer"
-            # Cols in zme_disp: 1:ZME, 2:Zone, 3:Registered, 4:Open, 5:Closed, 6:Within TAT, 7:Outside TAT, 8:Overdue, 9:Critical, 10:CM%, 11:SLA%
             data_zme = Reference(ws_zme, min_col=6, max_col=7, min_row=1, max_row=len(zme_disp) + 1)
             cats_zme = Reference(ws_zme, min_col=1, min_row=2, max_row=len(zme_disp) + 1)
             chart_zme.add_data(data_zme, titles_from_data=True)
             chart_zme.set_categories(cats_zme)
-            ws_zme.add_chart(chart_zme, "M2")
+            _apply_red_theme_to_chart(chart_zme)
+            ws_zme.add_chart(chart_zme, "M3")
+            _apply_red_white_theme_to_sheet(ws_zme, title_banner="CHARGEZONE OPERATIONAL DASHBOARD — FIELD ENGINEERING ZME SCORECARD")
 
-        # Sheet 4: Zone Performance
+        # ── Sheet 7: Zone Regional Performance ────────────────────────────────
         zone_table = compute_zone_issue_table(filtered_df)
         if not zone_table.empty:
             zone_disp = zone_table.rename(columns={
@@ -653,10 +961,9 @@ def generate_issue_excel_report(filtered_df, full_df, months_list, active_filter
                 'cm_efficiency': 'CM Efficiency %',
                 'tat_efficiency': 'TAT SLA %'
             })
-            zone_disp.to_excel(writer, sheet_name='Zone Performance', index=False)
-            ws_zone = writer.sheets['Zone Performance']
+            zone_disp.to_excel(writer, sheet_name='Zone Regional Performance', index=False)
+            ws_zone = writer.sheets['Zone Regional Performance']
 
-            # Embedded Native Clustered BarChart on Zone Sheet
             chart_zone = BarChart()
             chart_zone.type = "col"
             chart_zone.grouping = "clustered"
@@ -665,14 +972,16 @@ def generate_issue_excel_report(filtered_df, full_df, months_list, active_filter
             chart_zone.height = 10
             chart_zone.y_axis.title = "Ticket Count"
             chart_zone.x_axis.title = "Zone / Region"
-            # Cols in zone_disp: 1:Zone, 2:Total, 3:Open, 4:Closed, 5:Within TAT, 6:Outside TAT, 7:Overdue, 8:ZME Count, 9:Impacted Sites, 10:CM%, 11:SLA%
             data_zone = Reference(ws_zone, min_col=2, max_col=5, min_row=1, max_row=len(zone_disp) + 1)
             cats_zone = Reference(ws_zone, min_col=1, min_row=2, max_row=len(zone_disp) + 1)
             chart_zone.add_data(data_zone, titles_from_data=True)
             chart_zone.set_categories(cats_zone)
-            ws_zone.add_chart(chart_zone, "M2")
+            _apply_red_theme_to_chart(chart_zone)
+            ws_zone.add_chart(chart_zone, "M3")
+            _apply_red_white_theme_to_sheet(ws_zone, title_banner="CHARGEZONE OPERATIONAL DASHBOARD — REGIONAL ZONE PERFORMANCE")
 
-        # Sheet 5: Filtered Issues Dataset
+
+        # ── Sheet 9: Filtered Issue Records ───────────────────────────────────
         if not filtered_df.empty:
             nice_cols = [
                 'issueId', 'ocppId', 'stationId', 'stationName', 'zone', 'state', 'zme',
@@ -681,8 +990,10 @@ def generate_issue_excel_report(filtered_df, full_df, months_list, active_filter
             ]
             export_cols = [c for c in nice_cols if c in filtered_df.columns]
             filtered_df[export_cols].to_excel(writer, sheet_name='Filtered Issue Records', index=False)
+            ws_rec = writer.sheets['Filtered Issue Records']
+            _apply_red_white_theme_to_sheet(ws_rec, title_banner="CHARGEZONE OPERATIONAL DASHBOARD — FILTERED ISSUE TICKET RECORDS")
 
-        # Sheet 6: SLA Breached & Overdue
+        # ── Sheet 10: SLA Breached & Overdue ───────────────────────────────────
         breached_df = filtered_df[filtered_df['_Is_Closed_Without_'] | filtered_df['_Is_Overdue_']]
         if not breached_df.empty:
             nice_cols = [
@@ -692,6 +1003,8 @@ def generate_issue_excel_report(filtered_df, full_df, months_list, active_filter
             ]
             export_cols_b = [c for c in nice_cols if c in breached_df.columns]
             breached_df[export_cols_b].to_excel(writer, sheet_name='SLA Breached & Overdue', index=False)
+            ws_br = writer.sheets['SLA Breached & Overdue']
+            _apply_red_white_theme_to_sheet(ws_br, title_banner="CHARGEZONE OPERATIONAL DASHBOARD — SLA BREACHED & OVERDUE TICKETS", is_breached=True)
 
     output.seek(0)
     return output.getvalue()
@@ -849,6 +1162,9 @@ def plot_zme_sla_leaderboard(zme_df, top_n=10):
         x=df_top['within'],
         name='Closed Within TAT',
         orientation='h',
+        text=[str(int(v)) if v > 0 else '' for v in df_top['within']],
+        textposition='auto',
+        textfont=dict(size=11, color='#FFFFFF', weight='bold'),
         marker=dict(color='#10B981', line=dict(color='#059669', width=1)),
         hovertemplate='<b>%{y}</b><br>🟢 Closed Within TAT: <b>%{x:,}</b><extra></extra>'
     ))
@@ -858,6 +1174,9 @@ def plot_zme_sla_leaderboard(zme_df, top_n=10):
         x=df_top['outside'],
         name='Closed Breached TAT',
         orientation='h',
+        text=[str(int(v)) if v > 0 else '' for v in df_top['outside']],
+        textposition='auto',
+        textfont=dict(size=11, color='#FFFFFF', weight='bold'),
         marker=dict(color='#EF4444', line=dict(color='#DC2626', width=1)),
         hovertemplate='<b>%{y}</b><br>🔴 Closed Breached TAT: <b>%{x:,}</b><extra></extra>'
     ))
@@ -867,6 +1186,9 @@ def plot_zme_sla_leaderboard(zme_df, top_n=10):
         x=df_top['open'],
         name='Open / Pending',
         orientation='h',
+        text=[str(int(v)) if v > 0 else '' for v in df_top['open']],
+        textposition='auto',
+        textfont=dict(size=11, color='#FFFFFF', weight='bold'),
         marker=dict(color='#F59E0B', line=dict(color='#D97706', width=1)),
         hovertemplate='<b>%{y}</b><br>🟡 Open Tickets: <b>%{x:,}</b><extra></extra>'
     ))
@@ -1115,8 +1437,28 @@ def plot_charger_make_analysis(df):
     if make_df.empty:
         return None
 
-    # Normalize charger OEM names (e.g. EXICOM -> Exicom)
-    make_df['chargerMake'] = make_df['chargerMake'].astype(str).str.strip().str.title()
+    # Unify OEM names (e.g. 'Bright Blu' and 'Brightblu' -> 'BrightBlu')
+    make_df['chargerMake'] = make_df['chargerMake'].astype(str).str.strip()
+    oem_map = {
+        'Bright Blu': 'BrightBlu',
+        'Brightblu': 'BrightBlu',
+        'brightblu': 'BrightBlu',
+        'EXICOM': 'Exicom',
+        'exicom': 'Exicom',
+        'EVRE': 'EVRE',
+        'evre': 'EVRE',
+        'STARCHARGE': 'StarCharge',
+        'starcharge': 'StarCharge',
+        'Starcharge': 'StarCharge',
+        'ABB': 'ABB',
+        'abb': 'ABB',
+        'Abb': 'ABB',
+        'Siemens': 'Siemens',
+        'siemens': 'Siemens',
+        'Ador': 'Ador',
+        'ador': 'Ador'
+    }
+    make_df['chargerMake'] = make_df['chargerMake'].replace(oem_map)
 
     make_agg = make_df.groupby('chargerMake').agg(
         Total=('issueId', 'count'),
@@ -1130,6 +1472,9 @@ def plot_charger_make_analysis(df):
         x=make_agg['chargerMake'],
         y=make_agg['Within_TAT'],
         name='Within TAT',
+        text=[str(int(v)) if v > 0 else '' for v in make_agg['Within_TAT']],
+        textposition='auto',
+        textfont=dict(size=11, color='#FFFFFF', weight='bold'),
         marker=dict(color='#10B981', line=dict(color='#059669', width=1)),
         hovertemplate='<b>%{x}</b><br>🟢 Within TAT: <b>%{y:,}</b><extra></extra>'
     ))
@@ -1137,6 +1482,9 @@ def plot_charger_make_analysis(df):
         x=make_agg['chargerMake'],
         y=make_agg['Breached'],
         name='Breached TAT',
+        text=[str(int(v)) if v > 0 else '' for v in make_agg['Breached']],
+        textposition='auto',
+        textfont=dict(size=11, color='#FFFFFF', weight='bold'),
         marker=dict(color='#EF4444', line=dict(color='#DC2626', width=1)),
         hovertemplate='<b>%{x}</b><br>🔴 Breached TAT: <b>%{y:,}</b><extra></extra>'
     ))
@@ -1144,6 +1492,9 @@ def plot_charger_make_analysis(df):
         x=make_agg['chargerMake'],
         y=make_agg['Open'],
         name='Open Faults',
+        text=[str(int(v)) if v > 0 else '' for v in make_agg['Open']],
+        textposition='auto',
+        textfont=dict(size=11, color='#FFFFFF', weight='bold'),
         marker=dict(color='#F59E0B', line=dict(color='#D97706', width=1)),
         hovertemplate='<b>%{x}</b><br>🟡 Open: <b>%{y:,}</b><extra></extra>'
     ))
@@ -1197,19 +1548,22 @@ def plot_station_hotspots(df, top_n=10):
 
 def plot_top_issue_types_barchart(df_types):
     """Plot vertical bar chart for Top 10 Overall Repetitive Issue Types."""
-    if df_types.empty:
+    if df_types is None or df_types.empty:
         return None
+
+    type_col = 'Issue Type' if 'Issue Type' in df_types.columns else ('issueType' if 'issueType' in df_types.columns else df_types.columns[0])
+    count_col = 'Total_Faults' if 'Total_Faults' in df_types.columns else ('total_count' if 'total_count' in df_types.columns else ('fault_count' if 'fault_count' in df_types.columns else df_types.columns[1]))
 
     fig = go.Figure()
     fig.add_trace(go.Bar(
-        x=df_types['Issue Type'],
-        y=df_types['Total_Faults'],
+        x=df_types[type_col],
+        y=df_types[count_col],
         name='Total Faults',
         marker=dict(
             color='#991B1B',
             line=dict(color='#7F1D1D', width=1)
         ),
-        text=df_types['Total_Faults'],
+        text=df_types[count_col],
         textposition='outside',
         textfont=dict(size=11, weight='bold', color='#1E293B'),
         hovertemplate='<b>%{x}</b><br>Total Faults: <b>%{y:,}</b><extra></extra>'
@@ -1221,8 +1575,8 @@ def plot_top_issue_types_barchart(df_types):
         height=350
     )
     layout.update(dict(
-        xaxis=dict(title="issueType", showgrid=False, tickangle=-15),
-        yaxis=dict(title="Total_Faults", showgrid=True, gridcolor="#F1F5F9")
+        xaxis=dict(title=None, showgrid=False, tickangle=-15),
+        yaxis=dict(title="Total Faults", showgrid=True, gridcolor="#F1F5F9")
     ))
     fig.update_layout(**layout)
     return fig
@@ -1230,19 +1584,22 @@ def plot_top_issue_types_barchart(df_types):
 
 def plot_top_subtypes_barchart(df_subtypes, cat_name):
     """Plot vertical bar chart for Top 5 Sub-Types of a selected Issue Type or Station."""
-    if df_subtypes.empty:
+    if df_subtypes is None or df_subtypes.empty:
         return None
+
+    sub_col = 'Issue Sub-Type' if 'Issue Sub-Type' in df_subtypes.columns else ('issueSubType' if 'issueSubType' in df_subtypes.columns else df_subtypes.columns[0])
+    count_col = 'Subtype_Count' if 'Subtype_Count' in df_subtypes.columns else ('total_count' if 'total_count' in df_subtypes.columns else ('fault_count' if 'fault_count' in df_subtypes.columns else df_subtypes.columns[1]))
 
     fig = go.Figure()
     fig.add_trace(go.Bar(
-        x=df_subtypes['Issue Sub-Type'],
-        y=df_subtypes['Subtype_Count'],
+        x=df_subtypes[sub_col],
+        y=df_subtypes[count_col],
         name='Sub-Type Count',
         marker=dict(
             color='#DC2626',
             line=dict(color='#B91C1C', width=1)
         ),
-        text=df_subtypes['Subtype_Count'],
+        text=df_subtypes[count_col],
         textposition='outside',
         textfont=dict(size=11, weight='bold', color='#1E293B'),
         hovertemplate=f'<b>{cat_name}</b> - %{{x}}<br>Occurrences: <b>%{{y:,}}</b><extra></extra>'
@@ -1254,8 +1611,8 @@ def plot_top_subtypes_barchart(df_subtypes, cat_name):
         height=320
     )
     layout.update(dict(
-        xaxis=dict(title="IssueSubType", showgrid=False, tickangle=-15),
-        yaxis=dict(title="Subtype_Count", showgrid=True, gridcolor="#F1F5F9")
+        xaxis=dict(title=None, showgrid=False, tickangle=-15),
+        yaxis=dict(title="Subtype Count", showgrid=True, gridcolor="#F1F5F9")
     ))
     fig.update_layout(**layout)
     return fig
@@ -1698,7 +2055,6 @@ def inject_modern_css():
 NAV_ITEMS = [
     "📊 Executive Analytics",
     "🔁 Repetitive Faults",
-    "🚨 Critical & SLA Breached",
     "👷 ZME & Zone Governance",
     "📋 Issue Explorer",
     "📤 Data Upload & Validation"
@@ -1727,9 +2083,8 @@ def render_header_and_nav():
         key="top_navbar_pills"
     )
 
-    if selected_nav and selected_nav != st.session_state.active_nav:
+    if selected_nav:
         st.session_state.active_nav = selected_nav
-        st.rerun()
 
     return st.session_state.active_nav
 
@@ -1737,8 +2092,26 @@ def render_header_and_nav():
 # ─── Filter Toolbar ───────────────────────────────────────────────────────────
 
 def render_filter_toolbar(issue_df):
-    """Render clean horizontal filter toolbar with Month, Zone, ZME, Severity, Search, and Excel Download."""
+    """Render clean horizontal filter toolbar with Month, State, Zone, ZME, Search, and Excel Download."""
     all_months = get_available_months(issue_df)
+    all_states = sorted(list(issue_df['state'].dropna().unique())) if not issue_df.empty else []
+    all_zones = sorted(list(issue_df['zone'].dropna().unique())) if not issue_df.empty else []
+    all_zmes = sorted(list(issue_df['zme'].dropna().unique())) if not issue_df.empty else []
+    all_makes = ['All'] + sorted(list(issue_df[issue_df['chargerMake'] != 'Unknown']['chargerMake'].dropna().unique())) if not issue_df.empty else ['All']
+
+    # Initialize keys directly in st.session_state if not present
+    if 'flt_months' not in st.session_state:
+        st.session_state['flt_months'] = []
+    if 'flt_states' not in st.session_state:
+        st.session_state['flt_states'] = []
+    if 'flt_zones' not in st.session_state:
+        st.session_state['flt_zones'] = []
+    if 'flt_zmes' not in st.session_state:
+        st.session_state['flt_zmes'] = []
+    if 'flt_make' not in st.session_state:
+        st.session_state['flt_make'] = 'All'
+    if 'flt_search' not in st.session_state:
+        st.session_state['flt_search'] = ''
 
     with st.container():
         st.markdown("""
@@ -1759,53 +2132,41 @@ def render_filter_toolbar(issue_df):
         with col_m:
             selected_months = st.multiselect(
                 "🗓️ Months:",
-                all_months,
-                default=all_months,
+                options=all_months,
+                placeholder="All Months Included",
                 key="flt_months"
             )
-            if not selected_months:
-                selected_months = all_months
 
-        # Base filtered slice for dynamic State/Zone/ZME dropdowns
-        temp_df = issue_df.copy()
-        if selected_months:
-            temp_df = temp_df[temp_df['month'].isin(selected_months)]
-
-        # Available States
-        available_states = sorted(list(temp_df['state'].dropna().unique())) if not temp_df.empty else []
         with col_st:
-            selected_states = st.multiselect("🏛️ State / Location:", available_states, default=available_states, key="flt_states")
-            if not selected_states:
-                selected_states = available_states
+            selected_states = st.multiselect(
+                "🏛️ State / Location:",
+                options=all_states,
+                placeholder="All States Included",
+                key="flt_states"
+            )
 
-        # Available Zones within selected states
-        if selected_states and not temp_df.empty:
-            zone_pool_df = temp_df[temp_df['state'].isin(selected_states)]
-        else:
-            zone_pool_df = temp_df
-
-        available_zones = sorted(list(zone_pool_df['zone'].dropna().unique())) if not zone_pool_df.empty else []
         with col_z:
-            selected_zones = st.multiselect("🏢 Zone / Region:", available_zones, default=available_zones, key="flt_zones")
-            if not selected_zones:
-                selected_zones = available_zones
-
-        # ZMEs within selected zones
-        if selected_zones and not zone_pool_df.empty:
-            zme_pool = sorted(list(zone_pool_df[zone_pool_df['zone'].isin(selected_zones)]['zme'].dropna().unique()))
-        else:
-            zme_pool = sorted(list(temp_df['zme'].dropna().unique())) if not temp_df.empty else []
+            selected_zones = st.multiselect(
+                "🏢 Zone / Region:",
+                options=all_zones,
+                placeholder="All Zones Included",
+                key="flt_zones"
+            )
 
         with col_zme:
-            selected_zmes = st.multiselect("👷 ZME / Engineer:", zme_pool, default=zme_pool, key="flt_zmes")
-            if not selected_zmes:
-                selected_zmes = zme_pool
+            selected_zmes = st.multiselect(
+                "👷 ZME / Engineer:",
+                options=all_zmes,
+                placeholder="All ZMEs Included",
+                key="flt_zmes"
+            )
 
-        # Secondary filter row: Charger Make, Search, and Excel Export
         col_make, col_search, col_exp = st.columns([2.5, 5.0, 2.5])
         with col_make:
-            available_makes = ['All'] + sorted(list(issue_df[issue_df['chargerMake'] != 'Unknown']['chargerMake'].dropna().unique())) if not issue_df.empty else ['All']
-            selected_make = st.selectbox("🔌 Charger Make:", available_makes, index=0, key="flt_make")
+            make_idx = 0
+            if st.session_state.get('flt_make') in all_makes:
+                make_idx = all_makes.index(st.session_state['flt_make'])
+            selected_make = st.selectbox("🔌 Charger Make:", options=all_makes, index=make_idx, key="flt_make")
 
         with col_search:
             search_query = st.text_input("🔍 Search (Issue ID, Station, Charger ID, Keyword):", placeholder="e.g. CZ-0010, KA0010, Ador, Canopy...", key="flt_search")
@@ -1821,22 +2182,25 @@ def render_filter_toolbar(issue_df):
             query=search_query
         )
 
-        active_filters_meta = {
-            'states': ", ".join(selected_states[:3]) if len(selected_states) <= 3 else f"{len(selected_states)} Selected",
-            'zones': ", ".join(selected_zones[:3]) if len(selected_zones) <= 3 else f"{len(selected_zones)} Selected",
-            'make': selected_make,
-            'search': search_query if search_query else "None"
-        }
+        period_str = ", ".join(selected_months) if selected_months else "All Months"
+        st_str = ", ".join(selected_states[:3]) if selected_states and len(selected_states) <= 3 else (f"{len(selected_states)} Selected" if selected_states else "All")
+        zn_str = ", ".join(selected_zones[:3]) if selected_zones and len(selected_zones) <= 3 else (f"{len(selected_zones)} Selected" if selected_zones else "All")
+        filter_summary_str = f"Months: {period_str} | States: {st_str} | Zones: {zn_str} | Make: {selected_make} | Search: {search_query if search_query else 'None'}"
 
         # Excel Report Download
         with col_exp:
             st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-            report_bytes = generate_issue_excel_report(filtered_for_export, issue_df, tuple(selected_months), active_filters_meta)
-            month_slug = "_".join(selected_months[:3]) if len(selected_months) <= 3 else f"{selected_months[0]}_to_{selected_months[-1]}"
+            report_bytes = generate_issue_excel_report(
+                filtered_for_export,
+                issue_df,
+                tuple(selected_months) if selected_months else tuple(all_months),
+                filter_summary_str
+            )
+            month_slug = "_".join(selected_months[:3]) if selected_months and len(selected_months) <= 3 else "All_Months"
             st.download_button(
-                label="📥 Export Report with Charts (.xlsx)",
+                label="📊 Download Dashboard & Graphs (Red & White .xlsx)",
                 data=report_bytes,
-                file_name=f"ChargeZone_Issue_Tracker_{month_slug}.xlsx",
+                file_name=f"ChargeZone_Dashboard_Report_{month_slug}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
                 key="flt_download_report_btn"
@@ -1917,9 +2281,7 @@ def render_executive_analytics(filtered_df, full_df):
                 <span class="metric-icon">⏳</span>
             </div>
             <div class="metric-val">{total_open:,}</div>
-            <div class="metric-sub">
-                <span class="metric-badge {'red' if overdue_count > 0 else 'green'}">{overdue_count} Overdue</span>
-            </div>
+            <div class="metric-sub">Pending Resolution</div>
         </div>
         <div class="metric-card blue">
             <div class="metric-header">
@@ -2013,20 +2375,6 @@ def render_executive_analytics(filtered_df, full_df):
             center_text=f"{cm_tat_eff:.2f}%<br><span style='font-size:10px;color:#64748B;'>SLA RATE</span>"
         )
         st.plotly_chart(fig_sla, use_container_width=True)
-
-    with col_d3:
-        sev_counts = filtered_df['severity'].value_counts()
-        sev_colors = {'Critical': '#DC2626', 'Major': '#F59E0B', 'Minor': '#3B82F6'}
-        colors_sev = [sev_colors.get(s, '#64748B') for s in sev_counts.index]
-        fig_sev = plot_donut_chart(
-            labels=sev_counts.index.tolist(),
-            values=sev_counts.values.tolist(),
-            title="Severity Matrix",
-            subtitle="Fault distribution by incident criticality",
-            colors=colors_sev,
-            center_text=f"{len(sev_counts)}<br><span style='font-size:10px;color:#64748B;'>LEVELS</span>"
-        )
-        st.plotly_chart(fig_sev, use_container_width=True)
 
     # ── Charts Section 3: Root Cause Pareto & OEM Reliability ────────────────
     st.markdown('<div class="section-header">⚠️ <span class="section-header-accent">Failure Root Causes</span> & OEM Reliability</div>', unsafe_allow_html=True)
@@ -2261,141 +2609,6 @@ def render_repetitive_faults_view(filtered_df):
                 mime="text/csv",
                 key="dl_drilldown_csv"
             )
-
-
-# ─── View 3: Critical & SLA Breached Triage ───────────────────────────────────
-
-def render_critical_and_breached_view(filtered_df):
-    """Focused triage view for high-priority, overdue, and SLA-breached tickets."""
-    st.markdown('<div class="section-header">🚨 <span class="section-header-accent">Critical &amp; SLA Breached</span> Incident Triage</div>', unsafe_allow_html=True)
-
-    if filtered_df.empty:
-        st.info("No records matching current filters.")
-        return
-
-    crit_df = filtered_df[filtered_df['severity'] == 'Critical']
-    overdue_df = filtered_df[filtered_df['_Is_Overdue_']]
-    breached_closed_df = filtered_df[filtered_df['_Is_Closed_Without_']]
-    all_sla_risk = filtered_df[filtered_df['_Is_Overdue_'] | filtered_df['_Is_Closed_Without_'] | (filtered_df['severity'] == 'Critical')]
-
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.markdown(f"""
-            <div class="metric-card red">
-                <div class="metric-header">
-                    <span class="metric-label">Active Overdue</span>
-                    <span class="metric-icon">⏰</span>
-                </div>
-                <div class="metric-val">{len(overdue_df):,}</div>
-                <div class="metric-sub">Open Beyond Target TAT</div>
-            </div>
-        """, unsafe_allow_html=True)
-
-    with c2:
-        st.markdown(f"""
-            <div class="metric-card darkred">
-                <div class="metric-header">
-                    <span class="metric-label">Critical Faults</span>
-                    <span class="metric-icon">🔥</span>
-                </div>
-                <div class="metric-val">{len(crit_df):,}</div>
-                <div class="metric-sub">High Priority Severity</div>
-            </div>
-        """, unsafe_allow_html=True)
-
-    with c3:
-        st.markdown(f"""
-            <div class="metric-card amber">
-                <div class="metric-header">
-                    <span class="metric-label">Closed Breached</span>
-                    <span class="metric-icon">⚠️</span>
-                </div>
-                <div class="metric-val">{len(breached_closed_df):,}</div>
-                <div class="metric-sub">Closed Past SLA Window</div>
-            </div>
-        """, unsafe_allow_html=True)
-
-    with c4:
-        st.markdown(f"""
-            <div class="metric-card blue">
-                <div class="metric-header">
-                    <span class="metric-label">Total SLA Attention</span>
-                    <span class="metric-icon">🛡️</span>
-                </div>
-                <div class="metric-val">{len(all_sla_risk):,}</div>
-                <div class="metric-sub">Critical / Breached Pool</div>
-            </div>
-        """, unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    tab_overdue, tab_crit, tab_breached = st.tabs([
-        f"⏰ Active Overdue ({len(overdue_df)})",
-        f"🔥 Critical Faults ({len(crit_df)})",
-        f"⚠️ Closed Breached ({len(breached_closed_df)})"
-    ])
-
-    disp_cols = [
-        'issueId', 'ocppId', 'stationName', 'zone', 'zme', 'severity', 'status',
-        'issueType', 'issueSubType', 'issueDate', 'tdoc', 'ageOfIssue', 'tatDays', 'description'
-    ]
-
-    with tab_overdue:
-        if not overdue_df.empty:
-            cols = [c for c in disp_cols if c in overdue_df.columns]
-            st.dataframe(
-                overdue_df[cols].rename(columns={
-                    'issueId': 'Issue ID', 'ocppId': 'Charger ID', 'stationName': 'Station Name',
-                    'zone': 'Zone', 'zme': 'ZME', 'severity': 'Severity', 'status': 'Status',
-                    'issueType': 'Category', 'issueSubType': 'Sub-Type', 'issueDate': 'Issue Date',
-                    'tdoc': 'Target Date (TDOC)', 'ageOfIssue': 'Age (Days)', 'tatDays': 'Allowed TAT',
-                    'description': 'Description'
-                }),
-                use_container_width=True,
-                height=360
-            )
-            csv_overdue = overdue_df[cols].to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Download Overdue Tickets CSV", data=csv_overdue, file_name="Overdue_Issues.csv", mime="text/csv", key="dl_overdue_csv")
-        else:
-            st.success("🎉 No active overdue tickets! All open issues are within target SLA.")
-
-    with tab_crit:
-        if not crit_df.empty:
-            cols = [c for c in disp_cols if c in crit_df.columns]
-            st.dataframe(
-                crit_df[cols].rename(columns={
-                    'issueId': 'Issue ID', 'ocppId': 'Charger ID', 'stationName': 'Station Name',
-                    'zone': 'Zone', 'zme': 'ZME', 'severity': 'Severity', 'status': 'Status',
-                    'issueType': 'Category', 'issueSubType': 'Sub-Type', 'issueDate': 'Issue Date',
-                    'tdoc': 'Target Date (TDOC)', 'ageOfIssue': 'Age (Days)', 'tatDays': 'Allowed TAT',
-                    'description': 'Description'
-                }),
-                use_container_width=True,
-                height=360
-            )
-            csv_crit = crit_df[cols].to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Download Critical Issues CSV", data=csv_crit, file_name="Critical_Issues.csv", mime="text/csv", key="dl_crit_csv")
-        else:
-            st.info("No critical severity issues recorded in the current selection.")
-
-    with tab_breached:
-        if not breached_closed_df.empty:
-            cols = [c for c in disp_cols if c in breached_closed_df.columns]
-            st.dataframe(
-                breached_closed_df[cols].rename(columns={
-                    'issueId': 'Issue ID', 'ocppId': 'Charger ID', 'stationName': 'Station Name',
-                    'zone': 'Zone', 'zme': 'ZME', 'severity': 'Severity', 'status': 'Status',
-                    'issueType': 'Category', 'issueSubType': 'Sub-Type', 'issueDate': 'Issue Date',
-                    'tdoc': 'Target Date (TDOC)', 'ageOfIssue': 'Age (Days)', 'tatDays': 'Allowed TAT',
-                    'description': 'Description'
-                }),
-                use_container_width=True,
-                height=360
-            )
-            csv_breached = breached_closed_df[cols].to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Download Closed Breached CSV", data=csv_breached, file_name="Closed_Breached_Issues.csv", mime="text/csv", key="dl_breached_csv")
-        else:
-            st.success("🎉 No SLA-breached closures in the current selection.")
 
 
 # ─── View 4: ZME & Zone Governance Scorecard ──────────────────────────────────
@@ -2645,18 +2858,10 @@ def main():
                 st.session_state['uploaded_issue_bytes'] = main_uploaded_file.getvalue()
                 st.session_state['uploaded_file_name'] = main_uploaded_file.name
                 st.rerun()
-
-            if os.path.exists('Issue_Tracker.xlsx'):
-                st.markdown("<div style='text-align: center; margin-top: 0.8rem; margin-bottom: 0.8rem; color: #64748B; font-weight: 600; font-size: 0.85rem;'>— OR —</div>", unsafe_allow_html=True)
-                if st.button("⚡ Load Workspace Sample Dataset (Issue_Tracker.xlsx)", key="btn_load_workspace_sample", use_container_width=True):
-                    with open('Issue_Tracker.xlsx', 'rb') as f:
-                        st.session_state['uploaded_issue_bytes'] = f.read()
-                        st.session_state['uploaded_file_name'] = 'Issue_Tracker.xlsx'
-                    st.rerun()
         return
 
     # Loaded File Status Header
-    file_name = st.session_state.get('uploaded_file_name', 'Issue_Tracker.xlsx (Workspace Dataset)')
+    file_name = st.session_state.get('uploaded_file_name', 'Uploaded Issue Tracker')
     col_info, col_reset = st.columns([10, 2])
     with col_info:
         st.markdown(f"""
@@ -2690,9 +2895,6 @@ def main():
 
     elif active_nav == "🔁 Repetitive Faults":
         render_repetitive_faults_view(filtered_df)
-
-    elif active_nav == "🚨 Critical & SLA Breached":
-        render_critical_and_breached_view(filtered_df)
 
     elif active_nav == "👷 ZME & Zone Governance":
         render_governance_scorecard(filtered_df)
